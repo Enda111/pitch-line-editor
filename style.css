@@ -147,7 +147,39 @@ select {
   font-size: 0.9rem;
 }
 
+.transport-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.control-button {
+  min-width: 72px;
+  min-height: 38px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  background: #222936;
+  color: #f3f7fb;
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.control-button:hover {
+  background: #2e3747;
+}
+
+.control-button.square {
+  min-width: 38px;
+  width: 38px;
+  padding: 0;
+  font-size: 1.2rem;
+}
+
 .canvas-wrap {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 12px;
   min-height: 0;
   padding: 18px;
 }
@@ -160,6 +192,17 @@ select {
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 8px;
   background: #090b10;
+  cursor: grab;
+  touch-action: none;
+}
+
+.editor-canvas:active {
+  cursor: grabbing;
+}
+
+.timeline-scrollbar {
+  width: 100%;
+  accent-color: #3aa7ff;
 }
 
 @media (max-width: 640px) {
