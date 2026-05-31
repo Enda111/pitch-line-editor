@@ -1,3 +1,5 @@
 export function createAudioEngine() {
-  return {};
+  return {
+    status: "not-implemented",
+  };
 }
