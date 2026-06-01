@@ -8,6 +8,7 @@ export function addChordMarker(editor, markerInput) {
     time: markerInput.time,
     key: markerInput.key,
     chordType: markerInput.chordType,
+    octave: markerInput.octave,
     transitionDurationPerCurve: Object.fromEntries(
       editor.toneCurves.map((curve) => [curve.id, markerInput.defaultDuration]),
     ),
@@ -65,7 +66,7 @@ function applyMarkerToCurves(editor, marker, onlyCurveId = null) {
   const curves = onlyCurveId
     ? editor.toneCurves.filter((curve) => curve.id === onlyCurveId)
     : editor.toneCurves;
-  const targets = getChordTargets(marker.key, marker.chordType, editor.toneCurves.length);
+  const targets = getChordTargets(marker.key, marker.chordType, editor.toneCurves.length, marker.octave);
 
   curves.forEach((curve) => {
     const curveIndex = editor.toneCurves.findIndex((item) => item.id === curve.id);

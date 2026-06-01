@@ -115,8 +115,15 @@ function onPointerUp(editor) {
 
 function onWheel(editor, event) {
   event.preventDefault();
-  const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
-  editor.scrollBeat = clamp(editor.scrollBeat + delta / editor.pixelsPerBeat, 0, editor.maxScrollBeat());
+  const shouldScrollHorizontally = event.shiftKey || Math.abs(event.deltaX) > Math.abs(event.deltaY);
+
+  if (shouldScrollHorizontally) {
+    const delta = event.shiftKey && Math.abs(event.deltaX) <= Math.abs(event.deltaY) ? event.deltaY : event.deltaX;
+    editor.scrollBeat = clamp(editor.scrollBeat + delta / editor.pixelsPerBeat, 0, editor.maxScrollBeat());
+  } else {
+    editor.verticalScrollRow = clamp(editor.verticalScrollRow + event.deltaY / 18, 0, editor.maxVerticalScrollRow());
+  }
+
   editor.updateScrollbar();
   editor.draw();
 }
@@ -238,7 +245,6 @@ function hitSegment(editor, event) {
 
 function eventToGridPosition(editor, event) {
   const grid = editor.getGridMetrics();
-  const rowHeight = grid.height / SEMITONE_ROWS;
   const pos = eventToCanvasPosition(editor, event);
 
   if (pos.x < grid.x || pos.x > grid.x + grid.width || pos.y < grid.y || pos.y > grid.y + grid.height) {
@@ -246,7 +252,7 @@ function eventToGridPosition(editor, event) {
   }
 
   const beat = clamp(editor.scrollBeat + (pos.x - grid.x) / editor.pixelsPerBeat, 0, TOTAL_BEATS);
-  const row = clamp(Math.round((pos.y - grid.y) / rowHeight - 0.5), 0, SEMITONE_ROWS - 1);
+  const row = editor.rowFromY(pos.y, grid);
   const midi = editor.rowToMidi(row);
 
   return {

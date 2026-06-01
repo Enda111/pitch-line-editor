@@ -117,16 +117,17 @@ function startVoices(engine, lines, startBeat) {
   stopVoices(engine);
 
   lines.forEach((line) => {
-    if (!line.points.length) {
+    if (line.points.length < 2) {
       return;
     }
 
+    const frequency = frequencyAtBeat(line, startBeat);
     const oscillator = new window.Tone.Oscillator({
-      frequency: frequencyAtBeat(line, startBeat),
+      frequency: frequency || 440,
       type: "sine",
       volume: -18,
     });
-    const gain = new window.Tone.Gain(0.18).toDestination();
+    const gain = new window.Tone.Gain(frequency === null ? 0 : 0.18).toDestination();
 
     oscillator.connect(gain);
     oscillator.start();
@@ -140,11 +141,19 @@ function updateVoices(engine) {
   engine.activeLines.forEach((line) => {
     const voice = engine.lineVoices.get(line.id);
 
-    if (!voice || !line.points.length) {
+    if (!voice || line.points.length < 2) {
       return;
     }
 
-    voice.oscillator.frequency.rampTo(frequencyAtBeat(line, beat), 0.03);
+    const frequency = frequencyAtBeat(line, beat);
+
+    if (frequency === null) {
+      voice.gain.gain.rampTo(0, 0.03);
+      return;
+    }
+
+    voice.oscillator.frequency.rampTo(frequency, 0.03);
+    voice.gain.gain.rampTo(0.18, 0.03);
   });
 }
 
@@ -160,8 +169,8 @@ function stopVoices(engine) {
 function frequencyAtBeat(line, beat) {
   const points = [...line.points].sort((a, b) => a.beat - b.beat);
 
-  if (points.length === 1 || beat <= points[0].beat) {
-    return points[0].frequency;
+  if (points.length < 2 || beat < points[0].beat) {
+    return null;
   }
 
   for (let index = 0; index < points.length - 1; index += 1) {
@@ -176,7 +185,7 @@ function frequencyAtBeat(line, beat) {
     }
   }
 
-  return points[points.length - 1].frequency;
+  return null;
 }
 
 function shapeProgress(progress, transitionType) {

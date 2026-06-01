@@ -1,7 +1,7 @@
 export const NOTES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 export const TOTAL_BEATS = 64;
-export const SEMITONE_ROWS = 24;
-export const BASE_MIDI = 60;
+export const SEMITONE_ROWS = 60;
+export const LOWEST_MIDI = 36;
 export const TRANSITION_TYPES = [
   "instant",
   "linear",
@@ -22,26 +22,19 @@ export const CHORD_INTERVALS = {
   "dominant 7": [0, 4, 7, 10],
 };
 
-export function getChordRows(key, chordType, count) {
-  const rootIndex = NOTES.indexOf(key);
-  const intervals = CHORD_INTERVALS[chordType] || CHORD_INTERVALS.major;
-
-  return Array.from({ length: count }, (_, index) => {
-    const octaveLift = Math.floor(index / intervals.length);
-    const interval = intervals[index % intervals.length] + octaveLift * 12;
-    const rowFromBottom = (rootIndex + interval) % SEMITONE_ROWS;
-    return SEMITONE_ROWS - 1 - rowFromBottom;
-  });
+export function getChordRows(key, chordType, count, octave = 4) {
+  return getChordTargets(key, chordType, count, octave).map((target) => target.row);
 }
 
-export function getChordTargets(key, chordType, count) {
+export function getChordTargets(key, chordType, count, octave = 4) {
   const rootIndex = NOTES.indexOf(key);
   const intervals = CHORD_INTERVALS[chordType] || CHORD_INTERVALS.major;
+  const rootMidi = 12 * (octave + 1) + rootIndex;
 
   return Array.from({ length: count }, (_, index) => {
     const octaveLift = Math.floor(index / intervals.length);
     const interval = intervals[index % intervals.length] + octaveLift * 12;
-    const midi = BASE_MIDI + rootIndex + interval;
+    const midi = rootMidi + interval;
     return {
       row: midiToRow(midi),
       midi,
@@ -51,11 +44,11 @@ export function getChordTargets(key, chordType, count) {
 }
 
 export function rowToMidi(row) {
-  return BASE_MIDI + (SEMITONE_ROWS - 1 - row);
+  return LOWEST_MIDI + (SEMITONE_ROWS - 1 - row);
 }
 
 export function midiToRow(midi) {
-  return clamp(SEMITONE_ROWS - 1 - (midi - BASE_MIDI), 0, SEMITONE_ROWS - 1);
+  return clamp(SEMITONE_ROWS - 1 - (midi - LOWEST_MIDI), 0, SEMITONE_ROWS - 1);
 }
 
 export function midiToFrequency(midi) {

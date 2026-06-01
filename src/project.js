@@ -1,5 +1,6 @@
 const KEYS = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 const CHORD_TYPES = ["major", "minor", "diminished", "augmented", "major 7", "minor 7", "dominant 7"];
+const OCTAVES = [2, 3, 4, 5, 6];
 
 export function createProjectScreen(root, { onCreate }) {
   if (!root) {
@@ -39,6 +40,12 @@ export function createProjectScreen(root, { onCreate }) {
               }).join("")}
             </select>
           </div>
+          <div class="field">
+            <label for="starting-octave">Starting octave</label>
+            <select id="starting-octave" name="octave">
+              ${OCTAVES.map((octave) => `<option value="${octave}" ${octave === 4 ? "selected" : ""}>${octave}</option>`).join("")}
+            </select>
+          </div>
           <button class="create-button" type="submit">Create Project</button>
         </form>
       </div>
@@ -57,6 +64,7 @@ export function createProjectScreen(root, { onCreate }) {
       key: String(formData.get("key")),
       chordType: String(formData.get("chordType")),
       pitchLineCount: Number(formData.get("pitchLineCount")),
+      octave: Number(formData.get("octave")),
     });
   });
 }

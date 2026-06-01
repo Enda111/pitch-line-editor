@@ -17,19 +17,23 @@ import {
 const DEFAULT_PIXELS_PER_BEAT = 56;
 const MIN_PIXELS_PER_BEAT = 28;
 const MAX_PIXELS_PER_BEAT = 160;
+const PIXELS_PER_SEMITONE = 18;
 const MARKER_LANE_HEIGHT = 34;
+const OCTAVES = [2, 3, 4, 5, 6];
 
 export function createEditor(root, project, audio) {
   if (!root) {
     return;
   }
 
+  project.octave = project.octave || 4;
+
   root.innerHTML = `
     <section class="editor-screen" aria-label="Pitch line editor">
       <header class="editor-bar">
         <div class="project-meta">
           <h1>${escapeHtml(project.name)}</h1>
-          <p>${project.key} ${project.chordType} - ${project.pitchLineCount} curves</p>
+          <p>${project.key} ${project.chordType} octave ${project.octave} - ${project.pitchLineCount} curves</p>
         </div>
         <div class="transport-controls" aria-label="Playback controls">
           <button class="control-button" type="button" data-action="play">Play</button>
@@ -50,7 +54,7 @@ export function createEditor(root, project, audio) {
   `;
 
   const canvas = root.querySelector("canvas");
-  const guideRows = getChordRows(project.key, project.chordType, project.pitchLineCount);
+  const guideRows = getChordRows(project.key, project.chordType, project.pitchLineCount, project.octave);
   const editor = {
     canvas,
     context: canvas.getContext("2d"),
@@ -63,6 +67,7 @@ export function createEditor(root, project, audio) {
     selectedSegmentId: null,
     selectedMarkerId: null,
     pixelsPerBeat: DEFAULT_PIXELS_PER_BEAT,
+    verticalScrollRow: Math.max(0, Math.min(...guideRows) - 6),
     scrollBeat: 0,
     playheadBeat: 0,
     dragMode: null,
@@ -143,6 +148,12 @@ function createEditorApi(editor) {
     maxScrollBeat() {
       return Math.max(0, TOTAL_BEATS - this.visibleBeats());
     },
+    visibleRows() {
+      return this.getGridMetrics().height / PIXELS_PER_SEMITONE;
+    },
+    maxVerticalScrollRow() {
+      return Math.max(0, SEMITONE_ROWS - this.visibleRows());
+    },
     updateScrollbar() {
       const max = this.maxScrollBeat();
       editor.scrollbar.max = String(max);
@@ -152,8 +163,11 @@ function createEditorApi(editor) {
     beatToX(beat, grid) {
       return grid.x + (beat - editor.scrollBeat) * editor.pixelsPerBeat;
     },
-    rowToY(row, grid, rowHeight) {
-      return grid.y + row * rowHeight + rowHeight / 2;
+    rowToY(row, grid) {
+      return grid.y + (row - editor.verticalScrollRow) * PIXELS_PER_SEMITONE + PIXELS_PER_SEMITONE / 2;
+    },
+    rowFromY(y, grid) {
+      return clamp(Math.round((y - grid.y) / PIXELS_PER_SEMITONE + editor.verticalScrollRow - 0.5), 0, SEMITONE_ROWS - 1);
     },
     rowToMidi,
     midiToFrequency,
@@ -228,6 +242,9 @@ function renderInspector(editor) {
           ${Object.keys(CHORD_TYPE_LABELS).map((type) => `<option value="${type}" ${type === editor.project.chordType ? "selected" : ""}>${type}</option>`).join("")}
         </select>
       </div>
+      <select name="octave">
+        ${OCTAVES.map((octave) => `<option value="${octave}" ${octave === editor.project.octave ? "selected" : ""}>Octave ${octave}</option>`).join("")}
+      </select>
       <input name="duration" type="number" min="0" max="16" step="0.25" value="1">
       <button class="control-button full" type="button" data-action="preview-chord">Preview Chord</button>
       <button class="control-button full" type="submit">Add Marker</button>
@@ -237,7 +254,7 @@ function renderInspector(editor) {
       <div class="marker-list">
         ${editor.chordMarkers.map((item) => `
           <button class="marker-row ${item.id === editor.selectedMarkerId ? "selected" : ""}" type="button" data-marker-id="${item.id}">
-            ${item.key} ${item.chordType} @ ${roundBeat(item.time)}
+            ${item.key}${item.octave} ${item.chordType} @ ${roundBeat(item.time)}
           </button>
         `).join("") || `<div class="readout">No markers</div>`}
       </div>
@@ -260,6 +277,7 @@ function renderInspector(editor) {
       time: clamp(editor.playheadBeat, 0, TOTAL_BEATS),
       key: String(formData.get("key")),
       chordType: String(formData.get("chordType")),
+      octave: Number(formData.get("octave")),
       defaultDuration: Number(formData.get("duration")) || 0,
     });
     editor.audio.update(editor.toneCurves);
@@ -270,7 +288,7 @@ function renderInspector(editor) {
   editor.inspector.querySelector('[data-action="preview-chord"]').addEventListener("click", (event) => {
     const form = event.currentTarget.closest("form");
     const formData = new FormData(form);
-    const targets = getChordTargets(String(formData.get("key")), String(formData.get("chordType")), 4);
+    const targets = getChordTargets(String(formData.get("key")), String(formData.get("chordType")), 4, Number(formData.get("octave")));
     editor.audio.previewChord(targets.map((target) => target.frequency));
   });
 
@@ -384,7 +402,7 @@ function drawEditor(editor) {
 
 function renderPianoRoll(context, width, height, editor) {
   const grid = editor.getGridMetrics(width, height);
-  const rowHeight = grid.height / SEMITONE_ROWS;
+  const rowHeight = PIXELS_PER_SEMITONE;
 
   context.clearRect(0, 0, width, height);
   context.fillStyle = "#090b10";
@@ -415,7 +433,7 @@ function drawMarkerLane(context, grid, editor) {
     context.font = "12px system-ui, sans-serif";
     context.textAlign = "left";
     context.textBaseline = "middle";
-    context.fillText(`${marker.key} ${marker.chordType}`, x + 8, grid.markerY + grid.markerHeight / 2);
+    context.fillText(`${marker.key}${marker.octave} ${marker.chordType}`, x + 8, grid.markerY + grid.markerHeight / 2);
   });
 }
 
@@ -425,8 +443,11 @@ function drawGrid(context, grid, rowHeight, editor) {
   context.rect(grid.x, grid.y, grid.width, grid.height);
   context.clip();
 
-  for (let row = 0; row <= SEMITONE_ROWS; row += 1) {
-    const py = grid.y + row * rowHeight;
+  const firstRow = Math.max(0, Math.floor(editor.verticalScrollRow));
+  const lastRow = Math.min(SEMITONE_ROWS, Math.ceil(editor.verticalScrollRow + editor.visibleRows()));
+
+  for (let row = firstRow; row <= lastRow; row += 1) {
+    const py = grid.y + (row - editor.verticalScrollRow) * rowHeight;
     context.strokeStyle = "#1a202b";
     context.lineWidth = 1;
     context.beginPath();
@@ -454,7 +475,7 @@ function drawChordGuides(context, grid, rowHeight, editor) {
   context.clip();
 
   editor.guideRows.forEach((row) => {
-    const barY = grid.y + row * rowHeight + rowHeight * 0.17;
+    const barY = grid.y + (row - editor.verticalScrollRow) * rowHeight + rowHeight * 0.17;
     context.fillStyle = "rgba(58, 167, 255, 0.66)";
     context.fillRect(grid.x, barY, grid.width, Math.max(4, rowHeight * 0.66));
   });
@@ -577,14 +598,17 @@ function drawLabels(context, grid, rowHeight, editor) {
   context.textAlign = "right";
   context.textBaseline = "middle";
 
-  for (let row = 0; row < SEMITONE_ROWS; row += 1) {
+  const firstRow = Math.max(0, Math.floor(editor.verticalScrollRow));
+  const lastRow = Math.min(SEMITONE_ROWS - 1, Math.ceil(editor.verticalScrollRow + editor.visibleRows()));
+
+  for (let row = firstRow; row <= lastRow; row += 1) {
     context.fillText(midiToName(rowToMidi(row)), grid.x - 12, editor.rowToY(row, grid, rowHeight));
   }
 
   context.textAlign = "left";
   context.fillStyle = "#7fd0ff";
   context.fillText("Chord markers", grid.x, grid.markerY - 4);
-  context.fillText(`${editor.project.key} ${editor.project.chordType}`, grid.x + 10, grid.y + 14);
+  context.fillText(`${editor.project.key}${editor.project.octave} ${editor.project.chordType}`, grid.x + 10, grid.y + 14);
   context.strokeStyle = "rgba(255, 255, 255, 0.12)";
   context.strokeRect(grid.x, grid.y, grid.width, grid.height);
 }
