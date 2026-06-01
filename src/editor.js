@@ -12,6 +12,7 @@ import {
   getChordRows,
   midiToFrequency,
   midiToName,
+  pointFromMidi,
   pointFromRow,
   rowToMidi,
   validateBpm,
@@ -20,13 +21,16 @@ import {
 const DEFAULT_PIXELS_PER_BEAT = 56;
 const MIN_PIXELS_PER_BEAT = 28;
 const MAX_PIXELS_PER_BEAT = 160;
-const PIXELS_PER_SEMITONE = 18;
+const PIXELS_PER_SEMITONE = 24;
 const MARKER_LANE_HEIGHT = 34;
 const OCTAVES = [2, 3, 4, 5, 6];
 const CHORD_KEYS = [...NOTES, "Custom"];
 const DEFAULT_SYNTH_SETTINGS = {
-  waveform: "sine",
-  volume: -18,
+  layers: [
+    { enabled: true, waveform: "sine", volume: -18, detune: 0, octave: 0 },
+    { enabled: false, waveform: "triangle", volume: -24, detune: 7, octave: 0 },
+    { enabled: false, waveform: "sawtooth", volume: -30, detune: -7, octave: -1 },
+  ],
   attack: 0.01,
   decay: 0.12,
   sustain: 0.45,
@@ -127,6 +131,7 @@ export function createEditor(root, project, audio) {
 
   editor.renderSidebars();
   applyPatternTemplate(editor);
+  applyDemoSample(editor);
   editor.renderSidebars();
   editor.draw();
   animate(editor);
@@ -145,6 +150,59 @@ function createStarterToneCurves(count, guideRows) {
     sortCurve(curve);
     return curve;
   });
+}
+
+function applyDemoSample(editor) {
+  const sample = editor.project.demoSample;
+
+  if (!sample) {
+    return;
+  }
+
+  let beat = 0;
+  let lastMarker = null;
+  const transitions = ["ease-in-out", "S-curve", "linear", "instant"];
+
+  sample.progression.forEach(([key, chordType, customNotes], index) => {
+    beat += sample.lengths[index] || 4;
+    const isDominant = chordType === "dominant 7";
+    const durations = Object.fromEntries(
+      editor.toneCurves.map((curve, curveIndex) => [curve.id, isDominant ? 0.25 : 0.75 + ((curveIndex + index) % 3) * 0.5]),
+    );
+
+    lastMarker = addChordMarker(editor, {
+      beat,
+      key,
+      chordType,
+      octave: sample.octave,
+      customNotes: customNotes || [],
+      defaultDuration: isDominant ? 0.25 : 1,
+      durationPerCurve: durations,
+      transitionTypes: [isDominant ? "instant" : transitions[index % transitions.length]],
+    });
+  });
+
+  if (lastMarker) {
+    editor.toneCurves.forEach((curve) => {
+      const target = curve.points.find((point) => point.markerId === lastMarker.id && point.markerRole === "target");
+
+      if (!target) {
+        return;
+      }
+
+      curve.points.push({
+        ...pointFromMidi(lastMarker.beat + 4, target.midi),
+        markerId: lastMarker.id,
+        markerRole: "final-sustain",
+      });
+      sortCurve(curve);
+    });
+  }
+
+  if (sample.synthSettings) {
+    editor.project.synthSettings = normalizeSynthSettings(sample.synthSettings);
+    editor.audio.setSynthSettings(editor.project.synthSettings);
+  }
 }
 
 function createEditorApi(editor) {
@@ -547,15 +605,17 @@ function openToneDesigner(editor) {
         <button class="control-button square" type="button" data-action="close-tone" aria-label="Close">x</button>
       </div>
       <canvas class="waveform-preview" width="520" height="150" aria-label="Waveform preview"></canvas>
+      <div class="layer-grid">
+        ${settings.layers.map((layer, index) => renderLayerControl(layer, index)).join("")}
+      </div>
+      <canvas class="envelope-preview" width="520" height="150" aria-label="Envelope editor"></canvas>
       <div class="tone-grid">
-        ${selectControl("waveform", "Waveform", settings.waveform, ["sine", "square", "triangle", "sawtooth"])}
-        ${numberControl("volume", "Volume", settings.volume, -48, 0, 1)}
-        ${numberControl("attack", "Attack", settings.attack, 0.001, 5, 0.01)}
-        ${numberControl("decay", "Decay", settings.decay, 0.001, 5, 0.01)}
-        ${numberControl("sustain", "Sustain", settings.sustain, 0, 1, 0.01)}
-        ${numberControl("release", "Release", settings.release, 0.001, 8, 0.01)}
-        ${numberControl("filterCutoff", "Filter cutoff", settings.filterCutoff, 80, 16000, 10)}
-        ${numberControl("filterResonance", "Filter resonance", settings.filterResonance, 0.1, 20, 0.1)}
+        ${knobControl("attack", "Attack", settings.attack, 0.001, 5, 0.01)}
+        ${knobControl("decay", "Decay", settings.decay, 0.001, 5, 0.01)}
+        ${knobControl("sustain", "Sustain", settings.sustain, 0, 1, 0.01)}
+        ${knobControl("release", "Release", settings.release, 0.001, 8, 0.01)}
+        ${knobControl("filterCutoff", "Cutoff", settings.filterCutoff, 80, 16000, 10)}
+        ${knobControl("filterResonance", "Resonance", settings.filterResonance, 0.1, 20, 0.1)}
         ${selectControl("previewNote", "Preview note", "C4", PREVIEW_NOTES)}
       </div>
       <button class="control-button full" type="button" data-action="preview-synth">Preview Sound</button>
@@ -566,7 +626,8 @@ function openToneDesigner(editor) {
     const formSettings = readSynthSettings(editor.toneModal);
     editor.project.synthSettings = formSettings;
     editor.audio.setSynthSettings(formSettings);
-    drawWaveform(editor.toneModal.querySelector(".waveform-preview"), formSettings.waveform);
+    drawWaveform(editor.toneModal.querySelector(".waveform-preview"), formSettings.layers);
+    drawEnvelope(editor.toneModal.querySelector(".envelope-preview"), formSettings);
   };
 
   editor.toneModal.querySelectorAll("[data-synth-control]").forEach((control) => {
@@ -580,55 +641,115 @@ function openToneDesigner(editor) {
   editor.toneModal.querySelector('[data-action="close-tone"]').addEventListener("click", () => {
     editor.toneModal.hidden = true;
   });
+  attachEnvelopeDrag(editor);
   editor.toneModal.addEventListener("click", (event) => {
     if (event.target === editor.toneModal) {
       editor.toneModal.hidden = true;
     }
   }, { once: true });
-  drawWaveform(editor.toneModal.querySelector(".waveform-preview"), settings.waveform);
+  drawWaveform(editor.toneModal.querySelector(".waveform-preview"), settings.layers);
+  drawEnvelope(editor.toneModal.querySelector(".envelope-preview"), settings);
 }
 
-function selectControl(name, label, value, options) {
+function renderLayerControl(layer, index) {
+  return `
+    <fieldset class="layer-card">
+      <legend>Layer ${index + 1}</legend>
+      <label class="checkbox-row">
+        <input data-synth-control name="layer${index}Enabled" type="checkbox" ${layer.enabled ? "checked" : ""}>
+        <span>Enabled</span>
+      </label>
+      ${selectControl(`layer${index}Waveform`, "Waveform", layer.waveform, ["sine", "square", "triangle", "sawtooth"], true)}
+      ${knobControl(`layer${index}Volume`, "Volume", layer.volume, -48, 0, 1)}
+      ${knobControl(`layer${index}Detune`, "Detune", layer.detune, -100, 100, 1)}
+      ${knobControl(`layer${index}Octave`, "Octave", layer.octave, -2, 2, 1)}
+    </fieldset>
+  `;
+}
+
+function selectControl(name, label, value, options, synthControl = false) {
   return `
     <label class="tone-control">${label}
-      <select name="${name}" ${name === "previewNote" ? "" : "data-synth-control"}>
+      <select name="${name}" ${synthControl ? "data-synth-control" : ""}>
         ${options.map((option) => `<option value="${option}" ${option === value ? "selected" : ""}>${option}</option>`).join("")}
       </select>
     </label>
   `;
 }
 
-function numberControl(name, label, value, min, max, step) {
+function knobControl(name, label, value, min, max, step) {
+  const percent = knobPercent(value, min, max);
+
   return `
-    <label class="tone-control">${label}
-      <input data-synth-control name="${name}" type="number" min="${min}" max="${max}" step="${step}" value="${value}">
+    <label class="tone-control knob-control">${label}
+      <span class="knob-face" style="--knob-percent: ${percent}%">
+        <span data-readout-for="${name}">${value}</span>
+      </span>
+      <input data-synth-control name="${name}" type="range" min="${min}" max="${max}" step="${step}" value="${value}">
     </label>
   `;
 }
 
 function readSynthSettings(root) {
-  const settings = {};
-  Object.keys(DEFAULT_SYNTH_SETTINGS).forEach((key) => {
-    const control = root.querySelector(`[name="${key}"]`);
-    settings[key] = key === "waveform" ? control.value : Number(control.value);
+  const settings = {
+    layers: DEFAULT_SYNTH_SETTINGS.layers.map((_, index) => ({
+      enabled: root.querySelector(`[name="layer${index}Enabled"]`).checked,
+      waveform: root.querySelector(`[name="layer${index}Waveform"]`).value,
+      volume: Number(root.querySelector(`[name="layer${index}Volume"]`).value),
+      detune: Number(root.querySelector(`[name="layer${index}Detune"]`).value),
+      octave: Number(root.querySelector(`[name="layer${index}Octave"]`).value),
+    })),
+    attack: Number(root.querySelector('[name="attack"]').value),
+    decay: Number(root.querySelector('[name="decay"]').value),
+    sustain: Number(root.querySelector('[name="sustain"]').value),
+    release: Number(root.querySelector('[name="release"]').value),
+    filterCutoff: Number(root.querySelector('[name="filterCutoff"]').value),
+    filterResonance: Number(root.querySelector('[name="filterResonance"]').value),
+  };
+  root.querySelectorAll("[data-readout-for]").forEach((readout) => {
+    const control = root.querySelector(`[name="${readout.dataset.readoutFor}"]`);
+    const min = Number(control.min);
+    const max = Number(control.max);
+    readout.textContent = String(control.value);
+    readout.closest(".knob-face")?.style.setProperty("--knob-percent", `${knobPercent(control.value, min, max)}%`);
   });
   return normalizeSynthSettings(settings);
 }
 
+function knobPercent(value, min, max) {
+  return ((clamp(Number(value), Number(min), Number(max)) - Number(min)) / (Number(max) - Number(min))) * 100;
+}
+
 function normalizeSynthSettings(settings = {}) {
+  const legacyLayer = { enabled: true, waveform: settings.waveform || "sine", volume: settings.volume ?? -18, detune: 0, octave: 0 };
+  const layers = (settings.layers?.length ? settings.layers : [legacyLayer]).slice(0, 3);
   return {
-    waveform: ["sine", "square", "triangle", "sawtooth"].includes(settings.waveform) ? settings.waveform : DEFAULT_SYNTH_SETTINGS.waveform,
-    volume: clamp(Number(settings.volume), -48, 0),
-    attack: clamp(Number(settings.attack), 0.001, 5),
-    decay: clamp(Number(settings.decay), 0.001, 5),
-    sustain: clamp(Number(settings.sustain), 0, 1),
-    release: clamp(Number(settings.release), 0.001, 8),
-    filterCutoff: clamp(Number(settings.filterCutoff), 80, 16000),
-    filterResonance: clamp(Number(settings.filterResonance), 0.1, 20),
+    layers: DEFAULT_SYNTH_SETTINGS.layers.map((defaultLayer, index) => normalizeLayer(layers[index] || defaultLayer)),
+    attack: clampNumber(settings.attack, 0.001, 5, DEFAULT_SYNTH_SETTINGS.attack),
+    decay: clampNumber(settings.decay, 0.001, 5, DEFAULT_SYNTH_SETTINGS.decay),
+    sustain: clampNumber(settings.sustain, 0, 1, DEFAULT_SYNTH_SETTINGS.sustain),
+    release: clampNumber(settings.release, 0.001, 8, DEFAULT_SYNTH_SETTINGS.release),
+    filterCutoff: clampNumber(settings.filterCutoff, 80, 16000, DEFAULT_SYNTH_SETTINGS.filterCutoff),
+    filterResonance: clampNumber(settings.filterResonance, 0.1, 20, DEFAULT_SYNTH_SETTINGS.filterResonance),
   };
 }
 
-function drawWaveform(canvas, waveform) {
+function normalizeLayer(layer) {
+  return {
+    enabled: Boolean(layer.enabled),
+    waveform: ["sine", "square", "triangle", "sawtooth"].includes(layer.waveform) ? layer.waveform : "sine",
+    volume: clampNumber(layer.volume, -48, 0, -18),
+    detune: clampNumber(layer.detune, -100, 100, 0),
+    octave: Math.round(clampNumber(layer.octave, -2, 2, 0)),
+  };
+}
+
+function clampNumber(value, min, max, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) ? clamp(number, min, max) : fallback;
+}
+
+function drawWaveform(canvas, layers) {
   const context = canvas.getContext("2d");
   const width = canvas.width;
   const height = canvas.height;
@@ -649,7 +770,13 @@ function drawWaveform(canvas, waveform) {
 
   for (let x = 0; x <= width; x += 1) {
     const phase = (x / width) * Math.PI * 4;
-    const value = waveformValue(waveform, phase);
+    const enabledLayers = layers.filter((layer) => layer.enabled);
+    const value = enabledLayers.length
+      ? enabledLayers.reduce((sum, layer) => {
+        const gain = 10 ** (layer.volume / 20);
+        return sum + waveformValue(layer.waveform, phase * 2 ** layer.octave + layer.detune / 1200) * gain;
+      }, 0) / enabledLayers.length
+      : 0;
     const y = centerY - value * amplitude;
 
     if (x === 0) {
@@ -660,6 +787,76 @@ function drawWaveform(canvas, waveform) {
   }
 
   context.stroke();
+}
+
+function drawEnvelope(canvas, settings) {
+  const context = canvas.getContext("2d");
+  const width = canvas.width;
+  const height = canvas.height;
+  const left = 22;
+  const right = width - 22;
+  const bottom = height - 16;
+  const top = 16;
+  const usableWidth = right - left;
+  const sustainY = height - settings.sustain * (height - 28) - 14;
+  const attackX = left + 18 + (settings.attack / 5) * usableWidth * 0.28;
+  const decayX = attackX + 18 + (settings.decay / 5) * usableWidth * 0.24;
+  const releaseX = Math.max(decayX + 36, right - 18 - (settings.release / 8) * usableWidth * 0.24);
+
+  context.clearRect(0, 0, width, height);
+  context.fillStyle = "#090d13";
+  context.fillRect(0, 0, width, height);
+  context.strokeStyle = "#c3e88d";
+  context.lineWidth = 3;
+  context.beginPath();
+  context.moveTo(left, bottom);
+  context.lineTo(attackX, top);
+  context.lineTo(decayX, sustainY);
+  context.lineTo(releaseX, sustainY);
+  context.lineTo(right, bottom);
+  context.stroke();
+  [[attackX, 16], [decayX, sustainY], [releaseX, sustainY]].forEach(([x, y]) => {
+    context.fillStyle = "#ffffff";
+    context.beginPath();
+    context.arc(x, y, 6, 0, Math.PI * 2);
+    context.fill();
+  });
+}
+
+function attachEnvelopeDrag(editor) {
+  const canvas = editor.toneModal.querySelector(".envelope-preview");
+  canvas.addEventListener("pointerdown", (event) => {
+    const rect = canvas.getBoundingClientRect();
+    const update = (moveEvent) => {
+      const x = moveEvent.clientX - rect.left;
+      const y = moveEvent.clientY - rect.top;
+      const width = rect.width;
+      const height = rect.height;
+      const controls = editor.toneModal;
+
+      if (x < width * 0.32) {
+        controls.querySelector('[name="attack"]').value = clamp((x / width) * 5, 0.001, 5).toFixed(2);
+      } else if (x < width * 0.58) {
+        controls.querySelector('[name="decay"]').value = clamp(((x - width * 0.25) / width) * 5, 0.001, 5).toFixed(2);
+        controls.querySelector('[name="sustain"]').value = clamp(1 - y / height, 0, 1).toFixed(2);
+      } else {
+        controls.querySelector('[name="release"]').value = clamp(((width - x) / width) * 8, 0.001, 8).toFixed(2);
+      }
+
+      const settings = readSynthSettings(controls);
+      editor.project.synthSettings = settings;
+      editor.audio.setSynthSettings(settings);
+      drawEnvelope(canvas, settings);
+      drawWaveform(controls.querySelector(".waveform-preview"), settings.layers);
+    };
+    const stop = () => {
+      window.removeEventListener("pointermove", update);
+      window.removeEventListener("pointerup", stop);
+    };
+    window.addEventListener("pointermove", update);
+    window.addEventListener("pointerup", stop);
+    update(event);
+  });
 }
 
 function waveformValue(waveform, phase) {

@@ -1,3 +1,5 @@
+import { DEMO_SAMPLES } from "./demos.js";
+
 const KEYS = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B", "Custom"];
 const NOTE_NAMES = KEYS.filter((key) => key !== "Custom");
 const CHORD_TYPES = ["major", "minor", "diminished", "augmented", "major 7", "minor 7", "dominant 7"];
@@ -80,6 +82,13 @@ export function createProjectScreen(root, { onCreate }) {
               ${PATTERN_TEMPLATES.map((template) => `<option value="${template}">${template}</option>`).join("")}
             </select>
           </div>
+          <div class="field">
+            <label for="demo-sample">Demo Samples</label>
+            <select id="demo-sample" name="demoSampleName">
+              <option value="">None</option>
+              ${DEMO_SAMPLES.map((sample) => `<option value="${sample.name}">${sample.name} - ${sample.mood}</option>`).join("")}
+            </select>
+          </div>
           <button class="create-button" type="submit">Create Project</button>
         </form>
       </div>
@@ -90,6 +99,7 @@ export function createProjectScreen(root, { onCreate }) {
   const keySelect = root.querySelector("#project-key");
   const chordTypeSelect = root.querySelector("#chord-type");
   const customChordField = root.querySelector(".custom-chord-field");
+  const demoSelect = root.querySelector("#demo-sample");
 
   const syncCustomKeyMode = () => {
     const isCustom = keySelect.value === "Custom";
@@ -98,6 +108,23 @@ export function createProjectScreen(root, { onCreate }) {
   };
   keySelect.addEventListener("change", syncCustomKeyMode);
   syncCustomKeyMode();
+
+  demoSelect.addEventListener("change", () => {
+    const sample = DEMO_SAMPLES.find((item) => item.name === demoSelect.value);
+
+    if (!sample) {
+      return;
+    }
+
+    keySelect.value = sample.key;
+    chordTypeSelect.value = sample.chordType;
+    root.querySelector("#project-name").value = sample.name;
+    root.querySelector("#starting-octave").value = String(sample.octave);
+    root.querySelector("#project-bpm").value = String(sample.bpm);
+    root.querySelector("#pitch-line-count").value = String(sample.pitchLineCount);
+    root.querySelector("#pattern-template").value = "None";
+    syncCustomKeyMode();
+  });
 
   form.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -113,6 +140,7 @@ export function createProjectScreen(root, { onCreate }) {
       bpm: clampBpm(formData.get("bpm")),
       customNotes: formData.getAll("customNotes").map(String),
       patternTemplate: String(formData.get("patternTemplate")),
+      demoSample: DEMO_SAMPLES.find((sample) => sample.name === String(formData.get("demoSampleName"))) || null,
     });
   });
 }

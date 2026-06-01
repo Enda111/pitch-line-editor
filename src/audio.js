@@ -1,7 +1,10 @@
 const DEFAULT_BPM = 120;
 const DEFAULT_SYNTH_SETTINGS = {
-  waveform: "sine",
-  volume: -18,
+  layers: [
+    { enabled: true, waveform: "sine", volume: -18, detune: 0, octave: 0 },
+    { enabled: false, waveform: "triangle", volume: -24, detune: 7, octave: 0 },
+    { enabled: false, waveform: "sawtooth", volume: -30, detune: -7, octave: -1 },
+  ],
   attack: 0.01,
   decay: 0.12,
   sustain: 0.45,
@@ -45,8 +48,13 @@ export function createAudioEngine() {
       engine.synthSettings = normalizeSynthSettings(settings);
 
       engine.lineVoices.forEach((voice) => {
-        voice.oscillator.type = engine.synthSettings.waveform;
-        voice.output.gain.rampTo(volumeToGain(engine.synthSettings.volume), 0.03);
+        voice.layers.forEach((layerVoice, index) => {
+          const layer = engine.synthSettings.layers[index] || engine.synthSettings.layers[0];
+          layerVoice.oscillator.type = layer.waveform;
+          layerVoice.gain.gain.rampTo(layer.enabled ? volumeToGain(layer.volume) : 0, 0.03);
+          layerVoice.octave = layer.octave;
+          layerVoice.detune = layer.detune;
+        });
         voice.filter.frequency.rampTo(engine.synthSettings.filterCutoff, 0.03);
         voice.filter.Q.rampTo(engine.synthSettings.filterResonance, 0.03);
       });
@@ -103,23 +111,7 @@ export function createAudioEngine() {
       }
 
       await window.Tone.start();
-      const synth = new window.Tone.PolySynth(window.Tone.Synth, {
-        oscillator: { type: engine.synthSettings.waveform },
-        envelope: envelopeSettings(engine.synthSettings),
-        volume: engine.synthSettings.volume,
-      });
-      const filter = new window.Tone.Filter({
-        frequency: engine.synthSettings.filterCutoff,
-        Q: engine.synthSettings.filterResonance,
-        type: "lowpass",
-      }).toDestination();
-
-      synth.connect(filter);
-      synth.triggerAttackRelease(frequencies, "0.8");
-      setTimeout(() => {
-        synth.dispose();
-        filter.dispose();
-      }, 1200);
+      previewFrequencies(frequencies, engine.synthSettings, 1.5);
       return true;
     },
     async previewSynth(note) {
@@ -128,9 +120,7 @@ export function createAudioEngine() {
       }
 
       await window.Tone.start();
-      const synth = createPreviewSynth(engine.synthSettings);
-      synth.triggerAttackRelease(note, "0.8");
-      setTimeout(() => synth.dispose(), 1400);
+      previewFrequencies([window.Tone.Frequency(note).toFrequency()], engine.synthSettings, 1.5);
       return true;
     },
     stop() {
@@ -170,23 +160,29 @@ function startVoices(engine, lines, startBeat) {
     }
 
     const frequency = frequencyAtBeat(line, startBeat);
-    const oscillator = new window.Tone.Oscillator({
-      frequency: frequency || 440,
-      type: engine.synthSettings.waveform,
-    });
-    const gain = new window.Tone.Gain(frequency === null ? 0 : 0.18).toDestination();
+    const gain = new window.Tone.Gain(frequency === null ? 0 : 0.18);
     const filter = new window.Tone.Filter({
       frequency: engine.synthSettings.filterCutoff,
       Q: engine.synthSettings.filterResonance,
       type: "lowpass",
     });
-    const output = new window.Tone.Gain(volumeToGain(engine.synthSettings.volume)).toDestination();
+    const output = new window.Tone.Gain(1).toDestination();
+    const layers = engine.synthSettings.layers.map((layer) => {
+      const oscillator = new window.Tone.Oscillator({
+        frequency: layerFrequency(frequency || 440, layer),
+        type: layer.waveform,
+      });
+      const layerGain = new window.Tone.Gain(layer.enabled ? volumeToGain(layer.volume) : 0);
 
-    oscillator.connect(gain);
+      oscillator.connect(layerGain);
+      layerGain.connect(gain);
+      oscillator.start();
+      return { oscillator, gain: layerGain, octave: layer.octave, detune: layer.detune };
+    });
+
     gain.connect(filter);
     filter.connect(output);
-    oscillator.start();
-    engine.lineVoices.set(line.id, { oscillator, gain, filter, output });
+    engine.lineVoices.set(line.id, { layers, gain, filter, output });
   });
 }
 
@@ -207,15 +203,20 @@ function updateVoices(engine) {
       return;
     }
 
-    voice.oscillator.frequency.rampTo(frequency, 0.03);
+    voice.layers.forEach((layerVoice) => {
+      layerVoice.oscillator.frequency.rampTo(layerFrequency(frequency, layerVoice), 0.03);
+    });
     voice.gain.gain.rampTo(0.18, 0.03);
   });
 }
 
 function stopVoices(engine) {
-  engine.lineVoices.forEach(({ oscillator, gain, filter, output }) => {
-    oscillator.stop();
-    oscillator.dispose();
+  engine.lineVoices.forEach(({ layers, gain, filter, output }) => {
+    layers.forEach((layer) => {
+      layer.oscillator.stop();
+      layer.oscillator.dispose();
+      layer.gain.dispose();
+    });
     gain.dispose();
     filter.dispose();
     output.dispose();
@@ -224,15 +225,33 @@ function stopVoices(engine) {
 }
 
 function normalizeSynthSettings(settings = {}) {
+  const legacyLayer = {
+    enabled: true,
+    waveform: settings.waveform || "sine",
+    volume: settings.volume ?? -18,
+    detune: 0,
+    octave: 0,
+  };
+  const layers = (settings.layers?.length ? settings.layers : [legacyLayer]).slice(0, 3);
+
   return {
-    waveform: ["sine", "square", "triangle", "sawtooth"].includes(settings.waveform) ? settings.waveform : DEFAULT_SYNTH_SETTINGS.waveform,
-    volume: clampNumber(settings.volume, -48, 0, DEFAULT_SYNTH_SETTINGS.volume),
+    layers: DEFAULT_SYNTH_SETTINGS.layers.map((defaultLayer, index) => normalizeLayer(layers[index] || defaultLayer)),
     attack: clampNumber(settings.attack, 0.001, 5, DEFAULT_SYNTH_SETTINGS.attack),
     decay: clampNumber(settings.decay, 0.001, 5, DEFAULT_SYNTH_SETTINGS.decay),
     sustain: clampNumber(settings.sustain, 0, 1, DEFAULT_SYNTH_SETTINGS.sustain),
     release: clampNumber(settings.release, 0.001, 8, DEFAULT_SYNTH_SETTINGS.release),
     filterCutoff: clampNumber(settings.filterCutoff, 80, 16000, DEFAULT_SYNTH_SETTINGS.filterCutoff),
     filterResonance: clampNumber(settings.filterResonance, 0.1, 20, DEFAULT_SYNTH_SETTINGS.filterResonance),
+  };
+}
+
+function normalizeLayer(layer) {
+  return {
+    enabled: Boolean(layer.enabled),
+    waveform: ["sine", "square", "triangle", "sawtooth"].includes(layer.waveform) ? layer.waveform : "sine",
+    volume: clampNumber(layer.volume, -48, 0, -18),
+    detune: clampNumber(layer.detune, -100, 100, 0),
+    octave: Math.round(clampNumber(layer.octave, -2, 2, 0)),
   };
 }
 
@@ -245,25 +264,33 @@ function envelopeSettings(settings) {
   };
 }
 
-function createPreviewSynth(settings) {
-  const synth = new window.Tone.Synth({
-    oscillator: { type: settings.waveform },
-    envelope: envelopeSettings(settings),
-    volume: settings.volume,
-  });
+function previewFrequencies(frequencies, settings, duration) {
+  const durationSeconds = Number(duration) || 1.5;
   const filter = new window.Tone.Filter({
     frequency: settings.filterCutoff,
     Q: settings.filterResonance,
     type: "lowpass",
   }).toDestination();
+  const synths = [];
 
-  synth.connect(filter);
-  const originalDispose = synth.dispose.bind(synth);
-  synth.dispose = () => {
-    originalDispose();
+  frequencies.forEach((frequency) => {
+    settings.layers.filter((layer) => layer.enabled).forEach((layer) => {
+      const synth = new window.Tone.Synth({
+        oscillator: { type: layer.waveform },
+        envelope: envelopeSettings(settings),
+        volume: layer.volume,
+        detune: layer.detune,
+      });
+      synth.connect(filter);
+      synth.triggerAttackRelease(layerFrequency(frequency, layer), durationSeconds);
+      synths.push(synth);
+    });
+  });
+
+  setTimeout(() => {
+    synths.forEach((synth) => synth.dispose());
     filter.dispose();
-  };
-  return synth;
+  }, (durationSeconds + settings.release + 0.2) * 1000);
 }
 
 function volumeToGain(db) {
@@ -273,6 +300,10 @@ function volumeToGain(db) {
 function clampNumber(value, min, max, fallback) {
   const number = Number(value);
   return Number.isFinite(number) ? Math.min(Math.max(number, min), max) : fallback;
+}
+
+function layerFrequency(frequency, layer) {
+  return frequency * 2 ** (layer.octave) * 2 ** (layer.detune / 1200);
 }
 
 function frequencyAtBeat(line, beat) {
