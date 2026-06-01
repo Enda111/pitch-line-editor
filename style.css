@@ -62,6 +62,21 @@ select {
   gap: 18px;
 }
 
+.form-section {
+  display: grid;
+  gap: 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  padding-top: 16px;
+}
+
+.section-title {
+  color: #eef2f7;
+  font-size: 0.78rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 .field {
   display: grid;
   gap: 7px;
@@ -400,12 +415,23 @@ select {
 .tone-dialog {
   width: min(920px, 100%);
   max-height: min(92vh, 860px);
-  overflow: auto;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: 8px;
   background: #11161e;
   box-shadow: 0 24px 80px rgba(0, 0, 0, 0.42);
   padding: 18px;
+}
+
+.tone-fixed {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  background: #11161e;
+  padding-bottom: 14px;
 }
 
 .tone-dialog-header {
@@ -428,6 +454,19 @@ select {
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 6px;
   margin-bottom: 14px;
+}
+
+.tone-preview-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 12px;
+}
+
+.tone-scroll {
+  min-height: 0;
+  overflow: auto;
+  padding-top: 14px;
 }
 
 .envelope-preview {
@@ -554,6 +593,10 @@ select {
   }
 
   .layer-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .tone-preview-row {
     grid-template-columns: 1fr;
   }
 }

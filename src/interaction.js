@@ -24,16 +24,19 @@ function onPointerDown(editor, event) {
   const nodeHit = hitSelectedNode(editor, event);
 
   if (nodeHit) {
+    editor.selectNode(nodeHit.curve.id, nodeHit.point.id);
     editor.dragMode = "node";
     editor.dragPointId = nodeHit.point.id;
     editor.canvas.setPointerCapture(event.pointerId);
+    editor.renderSidebars();
+    editor.draw();
     return;
   }
 
   const markerHit = hitMarker(editor, event);
 
   if (markerHit) {
-    editor.selectedMarkerId = markerHit.id;
+    editor.selectChordMarker(markerHit.id);
     editor.renderSidebars();
     editor.draw();
     return;
@@ -42,13 +45,13 @@ function onPointerDown(editor, event) {
   const segmentHit = hitSegment(editor, event);
 
   if (segmentHit) {
-    editor.selectedCurveId = segmentHit.curve.id;
-    editor.selectedSegmentId = segmentHit.segment.id;
+    editor.selectSegment(segmentHit.curve.id, segmentHit.segment.id);
     editor.renderSidebars();
     editor.draw();
     return;
   }
 
+  editor.clearObjectSelection();
   editor.dragMode = "pan";
   editor.dragStartX = event.clientX;
   editor.dragStartScrollBeat = editor.scrollBeat;
@@ -146,6 +149,7 @@ function dragSelectedNode(editor, event) {
   point.row = position.row;
   point.midi = position.midi;
   point.frequency = position.frequency;
+  editor.selectedNodeId = point.id;
   sortCurve(curve);
   editor.audio.update(editor.toneCurves);
   editor.draw();
@@ -164,8 +168,11 @@ function addNodeAtEvent(editor, event) {
   }
 
   curve.points.push(pointFromRow(editor.snapBeat(position.beat), position.row));
+  editor.selectedNodeId = curve.points.at(-1).id;
   sortCurve(curve);
   editor.selectedSegmentId = null;
+  editor.selectedChordMarkerId = null;
+  editor.selectedModifierId = null;
   editor.audio.update(editor.toneCurves);
   editor.renderSidebars();
   editor.draw();
@@ -182,6 +189,7 @@ function deleteNodeAtEvent(editor, event) {
 
   curve.points = curve.points.filter((point) => point.id !== hit.point.id);
   sortCurve(curve);
+  editor.selectedNodeId = null;
   editor.selectedSegmentId = null;
   editor.audio.update(editor.toneCurves);
   editor.renderSidebars();

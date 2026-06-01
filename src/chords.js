@@ -19,7 +19,7 @@ export function addChordMarker(editor, markerInput) {
   applyMarkerTransitionTypes(editor, marker, markerInput.transitionTypes || []);
   editor.chordMarkers.push(marker);
   editor.chordMarkers.sort((a, b) => a.beat - b.beat);
-  editor.selectedMarkerId = marker.id;
+  editor.selectedChordMarkerId = marker.id;
   return marker;
 }
 

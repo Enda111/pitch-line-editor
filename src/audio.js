@@ -21,6 +21,7 @@ export function createAudioEngine() {
     pausedBeat: 0,
     lineVoices: new Map(),
     synthSettings: { ...DEFAULT_SYNTH_SETTINGS },
+    modifiers: [],
   };
 
   return {
@@ -58,6 +59,9 @@ export function createAudioEngine() {
         voice.filter.frequency.rampTo(engine.synthSettings.filterCutoff, 0.03);
         voice.filter.Q.rampTo(engine.synthSettings.filterResonance, 0.03);
       });
+    },
+    setModifiers(modifiers = []) {
+      engine.modifiers = Array.isArray(modifiers) ? modifiers.map(normalizeModifier) : [];
     },
     async toggle(lines, startBeat = engine.pausedBeat) {
       if (engine.isPlaying) {
@@ -188,6 +192,7 @@ function startVoices(engine, lines, startBeat) {
 
 function updateVoices(engine) {
   const beat = window.Tone.Transport.ticks / window.Tone.Transport.PPQ;
+  const modifierValues = evaluateModifiers(engine.modifiers, beat);
 
   engine.activeLines.forEach((line) => {
     const voice = engine.lineVoices.get(line.id);
@@ -206,7 +211,8 @@ function updateVoices(engine) {
     voice.layers.forEach((layerVoice) => {
       layerVoice.oscillator.frequency.rampTo(layerFrequency(frequency, layerVoice), 0.03);
     });
-    voice.gain.gain.rampTo(0.18, 0.03);
+    voice.gain.gain.rampTo(0.18 * modifierValues.volume, 0.03);
+    voice.filter.frequency.rampTo(engine.synthSettings.filterCutoff * modifierValues.filter, 0.03);
   });
 }
 
@@ -304,6 +310,54 @@ function clampNumber(value, min, max, fallback) {
 
 function layerFrequency(frequency, layer) {
   return frequency * 2 ** (layer.octave) * 2 ** (layer.detune / 1200);
+}
+
+function normalizeModifier(modifier) {
+  return {
+    id: modifier.id,
+    type: modifier.type || "Pulse every quarter note",
+    enabled: modifier.enabled !== false,
+    rateBeats: clampNumber(modifier.rateBeats, 0.125, 32, 1),
+    depth: clampNumber(modifier.depth, 0, 1, 0.5),
+    amount: clampNumber(modifier.amount, 0, 1, 0.5),
+    phase: clampNumber(modifier.phase, 0, 1, 0),
+    target: ["volume", "filter"].includes(modifier.target) ? modifier.target : "volume",
+  };
+}
+
+function evaluateModifiers(modifiers, beat) {
+  return modifiers.filter((modifier) => modifier.enabled).reduce((values, modifier) => {
+    const wave = modifierWave(modifier, beat);
+
+    if (modifier.target === "filter" || modifier.type === "Filter sweep") {
+      values.filter *= 1 - modifier.depth * 0.7 + wave * modifier.amount * 1.4;
+    } else {
+      values.volume *= 1 - wave * modifier.depth * modifier.amount;
+    }
+
+    values.volume = Math.min(Math.max(values.volume, 0.02), 1.5);
+    values.filter = Math.min(Math.max(values.filter, 0.08), 2.5);
+    return values;
+  }, { volume: 1, filter: 1 });
+}
+
+function modifierWave(modifier, beat) {
+  const phaseBeat = beat / modifier.rateBeats + modifier.phase;
+  const cycle = phaseBeat - Math.floor(phaseBeat);
+
+  if (modifier.type === "Sidechain-style ducking") {
+    return Math.max(0, 1 - cycle * 3);
+  }
+
+  if (modifier.type === "Volume swell" || modifier.type === "Filter sweep") {
+    return (Math.sin(phaseBeat * Math.PI * 2 - Math.PI / 2) + 1) / 2;
+  }
+
+  if (modifier.type === "Tremolo") {
+    return (Math.sin(phaseBeat * Math.PI * 2) + 1) / 2;
+  }
+
+  return cycle < 0.18 ? 1 - cycle / 0.18 : 0;
 }
 
 function frequencyAtBeat(line, beat) {

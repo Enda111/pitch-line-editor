@@ -8,6 +8,7 @@ import {
   SNAP_GRIDS,
   TRANSITION_TYPES,
   clamp,
+  createId,
   getChordTargets,
   getChordRows,
   midiToFrequency,
@@ -25,6 +26,15 @@ const PIXELS_PER_SEMITONE = 24;
 const MARKER_LANE_HEIGHT = 34;
 const OCTAVES = [2, 3, 4, 5, 6];
 const CHORD_KEYS = [...NOTES, "Custom"];
+const MODIFIER_TYPES = [
+  "Pulse every quarter note",
+  "Pulse every eighth note",
+  "Slow throb",
+  "Tremolo",
+  "Volume swell",
+  "Filter sweep",
+  "Sidechain-style ducking",
+];
 const DEFAULT_SYNTH_SETTINGS = {
   layers: [
     { enabled: true, waveform: "sine", volume: -18, detune: 0, octave: 0 },
@@ -52,6 +62,7 @@ export function createEditor(root, project, audio) {
   project.snapGrid = project.snapGrid || "Sixteenth note";
   project.snapPlayhead = project.snapPlayhead ?? true;
   project.synthSettings = normalizeSynthSettings(project.synthSettings);
+  project.globalModifiers = Array.isArray(project.globalModifiers) ? project.globalModifiers : [];
 
   root.innerHTML = `
     <section class="editor-screen" aria-label="Pitch line editor">
@@ -92,8 +103,11 @@ export function createEditor(root, project, audio) {
     guideRows,
     chordMarkers: [],
     selectedCurveId: "curve-1",
+    selectedNodeId: null,
     selectedSegmentId: null,
-    selectedMarkerId: null,
+    selectedChordMarkerId: null,
+    selectedModifierId: null,
+    globalModifiers: project.globalModifiers,
     snapGrid: project.snapGrid,
     snapPlayhead: project.snapPlayhead,
     pixelsPerBeat: DEFAULT_PIXELS_PER_BEAT,
@@ -114,6 +128,7 @@ export function createEditor(root, project, audio) {
   Object.assign(editor, createEditorApi(editor));
   audio.setBpm(project.bpm);
   audio.setSynthSettings(project.synthSettings);
+  audio.setModifiers(project.globalModifiers);
   bindControls(root, editor);
   attachEditorInteraction(editor);
 
@@ -213,6 +228,18 @@ function createEditorApi(editor) {
     selectedSegment() {
       const curve = this.selectedCurve();
       return curve?.segments.find((segment) => segment.id === editor.selectedSegmentId) || null;
+    },
+    clearObjectSelection() {
+      clearObjectSelection(editor);
+    },
+    selectNode(curveId, nodeId) {
+      selectNode(editor, curveId, nodeId);
+    },
+    selectSegment(curveId, segmentId) {
+      selectSegment(editor, curveId, segmentId);
+    },
+    selectChordMarker(markerId) {
+      selectChordMarker(editor, markerId);
     },
     getGridMetrics(width, height) {
       const canvasRect = editor.canvas.getBoundingClientRect();
@@ -314,7 +341,7 @@ function renderCurveSidebar(editor) {
   editor.curveSidebar.querySelectorAll(".curve-row").forEach((button) => {
     button.addEventListener("click", () => {
       editor.selectedCurveId = button.dataset.curveId;
-      editor.selectedSegmentId = null;
+      clearObjectSelection(editor);
       editor.renderSidebars();
       editor.draw();
     });
@@ -323,10 +350,13 @@ function renderCurveSidebar(editor) {
 
 function renderInspector(editor) {
   const curve = editor.selectedCurve();
+  const node = selectedNode(editor);
   const segment = editor.selectedSegment();
-  const marker = editor.chordMarkers.find((item) => item.id === editor.selectedMarkerId);
+  const marker = editor.chordMarkers.find((item) => item.id === editor.selectedChordMarkerId);
+  const modifier = editor.globalModifiers.find((item) => item.id === editor.selectedModifierId);
   const previousChord = editor.chordMarkers.filter((item) => item.beat <= editor.playheadBeat).at(-1) || editor.project;
   const suggested = getSuggestedChordChoices(previousChord, editor.project);
+  const mode = inspectorMode(editor, { node, segment, marker, modifier });
 
   editor.inspector.innerHTML = `
     <div class="panel-title">Inspector</div>
@@ -334,60 +364,22 @@ function renderInspector(editor) {
       <label>Selected curve</label>
       <div class="readout">${curve?.name || "None"}</div>
     </div>
-    <div class="inspector-section snap-section">
-      <label for="snap-grid">Snap Grid</label>
-      <select id="snap-grid" name="snapGrid">
-        ${Object.keys(SNAP_GRIDS).map((grid) => `<option value="${grid}" ${grid === editor.snapGrid ? "selected" : ""}>${grid}</option>`).join("")}
-      </select>
-      <label class="checkbox-row">
-        <input type="checkbox" name="snapPlayhead" ${editor.snapPlayhead ? "checked" : ""}>
-        <span>Snap Playhead</span>
-      </label>
-    </div>
-    <div class="inspector-section">
-      <label for="segment-transition">Selected segment</label>
-      <select id="segment-transition" ${segment ? "" : "disabled"}>
-        ${TRANSITION_TYPES.map((type) => `<option value="${type}" ${segment?.transitionType === type ? "selected" : ""}>${type}</option>`).join("")}
-      </select>
-    </div>
-    <form class="marker-form inspector-section">
-      <label>Add chord marker</label>
-      <div class="readout">Marker beat: ${roundBeat(editor.playheadBeat)}</div>
-      <select name="chordChoice">
-        ${renderChordChoices(editor, suggested)}
-      </select>
-      <select name="octave">
-        ${OCTAVES.map((octave) => `<option value="${octave}" ${octave === editor.project.octave ? "selected" : ""}>Octave ${octave}</option>`).join("")}
-      </select>
-      <div class="marker-custom-notes" hidden>
-        <label>Custom chord notes</label>
-        <div class="note-selector">
-      ${NOTES.map((note) => `
-            <label class="note-choice">
-              <input type="checkbox" name="customNotes" value="${note}" ${editor.project.customNotes.includes(note) ? "checked" : ""}>
-              <span>${note}</span>
-            </label>
-          `).join("")}
-        </div>
-      </div>
-      <label for="marker-duration">Transition duration (beats)</label>
-      <input id="marker-duration" name="duration" type="number" min="0" max="16" step="0.25" value="1">
-      <button class="control-button full" type="button" data-action="preview-chord">Preview Chord</button>
-      <button class="control-button full" type="submit">Add Marker</button>
-    </form>
-    <div class="inspector-section">
-      <label>Selected marker</label>
-      <div class="marker-list">
-        ${editor.chordMarkers.map((item) => `
-          <button class="marker-row ${item.id === editor.selectedMarkerId ? "selected" : ""}" type="button" data-marker-id="${item.id}">
-            ${markerLabel(item)} @ beat ${roundBeat(item.beat)}
-          </button>
-        `).join("") || `<div class="readout">No markers</div>`}
-      </div>
-    </div>
-    ${marker ? renderMarkerEditor(editor, marker, suggested) : ""}
-    ${marker ? renderMarkerDurations(editor, marker) : ""}
+    ${mode === "node" ? renderNodeInspector(node) : ""}
+    ${mode === "segment" ? renderSegmentInspector(editor, curve, segment) : ""}
+    ${mode === "marker" ? renderMarkerInspector(editor, marker, suggested) : ""}
+    ${mode === "modifier" ? renderModifierInspector(modifier) : ""}
+    ${mode === "general" ? renderGeneralInspector(editor, suggested) : ""}
   `;
+
+  editor.inspector.querySelector('[name="snapGrid"]')?.addEventListener("change", (event) => {
+    editor.snapGrid = event.target.value;
+    editor.project.snapGrid = editor.snapGrid;
+  });
+
+  editor.inspector.querySelector('[name="snapPlayhead"]')?.addEventListener("change", (event) => {
+    editor.snapPlayhead = event.target.checked;
+    editor.project.snapPlayhead = editor.snapPlayhead;
+  });
 
   editor.inspector.querySelector("#segment-transition")?.addEventListener("change", (event) => {
     const selectedCurve = editor.selectedCurve();
@@ -397,17 +389,21 @@ function renderInspector(editor) {
     }
   });
 
-  editor.inspector.querySelector('[name="snapGrid"]').addEventListener("change", (event) => {
-    editor.snapGrid = event.target.value;
-    editor.project.snapGrid = editor.snapGrid;
+  editor.inspector.querySelector('[data-action="delete-node"]')?.addEventListener("click", () => {
+    const selectedCurve = editor.selectedCurve();
+    if (!selectedCurve || !editor.selectedNodeId || selectedCurve.points.length <= 1) {
+      return;
+    }
+
+    selectedCurve.points = selectedCurve.points.filter((point) => point.id !== editor.selectedNodeId);
+    editor.selectedNodeId = null;
+    sortCurve(selectedCurve);
+    editor.audio.update(editor.toneCurves);
+    editor.renderSidebars();
+    editor.draw();
   });
 
-  editor.inspector.querySelector('[name="snapPlayhead"]').addEventListener("change", (event) => {
-    editor.snapPlayhead = event.target.checked;
-    editor.project.snapPlayhead = editor.snapPlayhead;
-  });
-
-  editor.inspector.querySelector(".marker-form").addEventListener("submit", (event) => {
+  editor.inspector.querySelector(".marker-form")?.addEventListener("submit", (event) => {
     event.preventDefault();
     const formData = new FormData(event.currentTarget);
     const chord = parseChordChoice(String(formData.get("chordChoice")));
@@ -424,7 +420,7 @@ function renderInspector(editor) {
     editor.draw();
   });
 
-  editor.inspector.querySelector('[data-action="preview-chord"]').addEventListener("click", (event) => {
+  editor.inspector.querySelector('[data-action="preview-chord"]')?.addEventListener("click", (event) => {
     const form = event.currentTarget.closest("form");
     const formData = new FormData(form);
     const chord = parseChordChoice(String(formData.get("chordChoice")));
@@ -434,11 +430,13 @@ function renderInspector(editor) {
 
   const chordChoice = editor.inspector.querySelector('[name="chordChoice"]');
   const markerCustomNotes = editor.inspector.querySelector(".marker-custom-notes");
-  const syncCustomNotes = () => {
-    markerCustomNotes.hidden = parseChordChoice(chordChoice.value).key !== "Custom";
-  };
-  chordChoice.addEventListener("change", syncCustomNotes);
-  syncCustomNotes();
+  if (chordChoice && markerCustomNotes) {
+    const syncCustomNotes = () => {
+      markerCustomNotes.hidden = parseChordChoice(chordChoice.value).key !== "Custom";
+    };
+    chordChoice.addEventListener("change", syncCustomNotes);
+    syncCustomNotes();
+  }
 
   const editChordChoice = editor.inspector.querySelector('[name="editChordChoice"]');
   const editCustomNotes = editor.inspector.querySelector(".edit-marker-custom-notes");
@@ -450,9 +448,9 @@ function renderInspector(editor) {
     syncEditCustomNotes();
   }
 
-  editor.inspector.querySelectorAll(".marker-row").forEach((button) => {
+  editor.inspector.querySelectorAll("[data-marker-id]").forEach((button) => {
     button.addEventListener("click", () => {
-      editor.selectedMarkerId = button.dataset.markerId;
+      selectChordMarker(editor, button.dataset.markerId);
       editor.renderSidebars();
       editor.draw();
     });
@@ -488,6 +486,282 @@ function renderInspector(editor) {
       editor.draw();
     });
   });
+
+  editor.inspector.querySelector('[data-action="add-modifier"]')?.addEventListener("click", () => {
+    const select = editor.inspector.querySelector('[name="modifierType"]');
+    const modifier = createModifier(select.value);
+    editor.globalModifiers.push(modifier);
+    editor.project.globalModifiers = editor.globalModifiers;
+    selectModifier(editor, modifier.id);
+    editor.audio.setModifiers(editor.globalModifiers);
+    editor.renderSidebars();
+    editor.draw();
+  });
+
+  editor.inspector.querySelectorAll(".modifier-row").forEach((button) => {
+    button.addEventListener("click", () => {
+      selectModifier(editor, button.dataset.modifierId);
+      editor.renderSidebars();
+      editor.draw();
+    });
+  });
+
+  const syncModifierForm = (event) => {
+    const current = editor.globalModifiers.find((item) => item.id === editor.selectedModifierId);
+    if (!current) {
+      return;
+    }
+
+    const form = event.currentTarget;
+    current.enabled = form.elements.enabled.checked;
+    current.type = form.elements.type.value;
+    current.rateBeats = Number(form.elements.rateBeats.value) || 1;
+    current.depth = clamp(Number(form.elements.depth.value) || 0, 0, 1);
+    current.amount = clamp(Number(form.elements.amount.value) || 0, 0, 1);
+    current.phase = Number(form.elements.phase.value) || 0;
+    current.target = form.elements.target.value;
+    editor.project.globalModifiers = editor.globalModifiers;
+    editor.audio.setModifiers(editor.globalModifiers);
+  };
+  editor.inspector.querySelector(".modifier-form")?.addEventListener("input", syncModifierForm);
+  editor.inspector.querySelector(".modifier-form")?.addEventListener("change", syncModifierForm);
+
+  editor.inspector.querySelector('[data-action="delete-modifier"]')?.addEventListener("click", () => {
+    editor.globalModifiers = editor.globalModifiers.filter((item) => item.id !== editor.selectedModifierId);
+    editor.project.globalModifiers = editor.globalModifiers;
+    editor.selectedModifierId = null;
+    editor.audio.setModifiers(editor.globalModifiers);
+    editor.renderSidebars();
+    editor.draw();
+  });
+}
+
+function inspectorMode(editor, selection) {
+  if (selection.node) return "node";
+  if (selection.segment) return "segment";
+  if (selection.marker) return "marker";
+  if (selection.modifier) return "modifier";
+  return "general";
+}
+
+function selectedNode(editor) {
+  const curve = editor.selectedCurve();
+  return curve?.points.find((point) => point.id === editor.selectedNodeId) || null;
+}
+
+function renderNodeInspector(node) {
+  return `
+    <div class="inspector-section">
+      <div class="section-title">Node</div>
+      <div class="readout">Beat ${roundBeat(node.beat)}</div>
+      <div class="readout">${midiToName(node.midi)} · MIDI ${node.midi}</div>
+      <button class="control-button full" type="button" data-action="delete-node">Delete Node</button>
+    </div>
+  `;
+}
+
+function renderSegmentInspector(editor, curve, segment) {
+  const from = curve.points.find((point) => point.id === segment.fromId);
+  const to = curve.points.find((point) => point.id === segment.toId);
+  return `
+    <div class="inspector-section">
+      <div class="section-title">Segment</div>
+      <label for="segment-transition">Transition type</label>
+      <select id="segment-transition">
+        ${TRANSITION_TYPES.map((type) => `<option value="${type}" ${segment.transitionType === type ? "selected" : ""}>${type}</option>`).join("")}
+      </select>
+      <div class="readout">${curve.name}</div>
+      <div class="readout">Beat ${roundBeat(from.beat)} to ${roundBeat(to.beat)}</div>
+      <div class="readout">${midiToName(from.midi)} to ${midiToName(to.midi)}</div>
+    </div>
+  `;
+}
+
+function renderGeneralInspector(editor, suggested) {
+  return `
+    ${renderSnapTools(editor)}
+    ${renderMarkerCreation(editor, suggested)}
+    ${renderMarkerList(editor)}
+    ${renderModifiersPanel(editor)}
+  `;
+}
+
+function renderMarkerInspector(editor, marker, suggested) {
+  return `
+    ${renderMarkerList(editor)}
+    ${renderMarkerEditor(editor, marker, suggested)}
+    ${renderMarkerDurations(editor, marker)}
+  `;
+}
+
+function renderSnapTools(editor) {
+  return `
+    <div class="inspector-section snap-section">
+      <div class="section-title">Project Tools</div>
+      <label for="snap-grid">Snap Grid</label>
+      <select id="snap-grid" name="snapGrid">
+        ${Object.keys(SNAP_GRIDS).map((grid) => `<option value="${grid}" ${grid === editor.snapGrid ? "selected" : ""}>${grid}</option>`).join("")}
+      </select>
+      <label class="checkbox-row">
+        <input type="checkbox" name="snapPlayhead" ${editor.snapPlayhead ? "checked" : ""}>
+        <span>Snap Playhead</span>
+      </label>
+    </div>
+  `;
+}
+
+function renderMarkerCreation(editor, suggested) {
+  return `
+    <form class="marker-form inspector-section">
+      <div class="section-title">Add Chord Marker</div>
+      <div class="readout">Marker beat: ${roundBeat(editor.playheadBeat)}</div>
+      <select name="chordChoice">
+        ${renderChordChoices(editor, suggested)}
+      </select>
+      <select name="octave">
+        ${OCTAVES.map((octave) => `<option value="${octave}" ${octave === editor.project.octave ? "selected" : ""}>Octave ${octave}</option>`).join("")}
+      </select>
+      <div class="marker-custom-notes" hidden>
+        <label>Custom chord notes</label>
+        <div class="note-selector">
+          ${NOTES.map((note) => `
+            <label class="note-choice">
+              <input type="checkbox" name="customNotes" value="${note}" ${editor.project.customNotes.includes(note) ? "checked" : ""}>
+              <span>${note}</span>
+            </label>
+          `).join("")}
+        </div>
+      </div>
+      <label for="marker-duration">Transition duration (beats)</label>
+      <input id="marker-duration" name="duration" type="number" min="0" max="16" step="0.25" value="1">
+      <button class="control-button full" type="button" data-action="preview-chord">Preview Chord</button>
+      <button class="control-button full" type="submit">Add Marker</button>
+    </form>
+  `;
+}
+
+function renderMarkerList(editor) {
+  return `
+    <div class="inspector-section">
+      <div class="section-title">Chord Markers</div>
+      <div class="marker-list">
+        ${editor.chordMarkers.map((item) => `
+          <button class="marker-row ${item.id === editor.selectedChordMarkerId ? "selected" : ""}" type="button" data-marker-id="${item.id}">
+            ${markerLabel(item)} @ beat ${roundBeat(item.beat)}
+          </button>
+        `).join("") || `<div class="readout">No markers</div>`}
+      </div>
+    </div>
+  `;
+}
+
+function renderModifiersPanel(editor) {
+  return `
+    <div class="inspector-section">
+      <div class="section-title">Global Modifiers</div>
+      <select name="modifierType">
+        ${MODIFIER_TYPES.map((type) => `<option value="${type}">${type}</option>`).join("")}
+      </select>
+      <button class="control-button full" type="button" data-action="add-modifier">Add Modifier</button>
+      <div class="marker-list">
+        ${editor.globalModifiers.map((modifier) => `
+          <button class="marker-row modifier-row ${modifier.id === editor.selectedModifierId ? "selected" : ""}" type="button" data-modifier-id="${modifier.id}">
+            ${modifier.enabled ? "" : "Off · "}${modifier.type}
+          </button>
+        `).join("") || `<div class="readout">No modifiers</div>`}
+      </div>
+    </div>
+  `;
+}
+
+function renderModifierInspector(modifier) {
+  return `
+    <form class="modifier-form inspector-section">
+      <div class="section-title">Global Modifier</div>
+      <label class="checkbox-row">
+        <input name="enabled" type="checkbox" ${modifier.enabled ? "checked" : ""}>
+        <span>Enabled</span>
+      </label>
+      <label>Type</label>
+      <select name="type">
+        ${MODIFIER_TYPES.map((type) => `<option value="${type}" ${type === modifier.type ? "selected" : ""}>${type}</option>`).join("")}
+      </select>
+      <label>Target</label>
+      <select name="target">
+        ${["volume", "filter"].map((target) => `<option value="${target}" ${target === modifier.target ? "selected" : ""}>${target}</option>`).join("")}
+      </select>
+      <label>Rate (beats)</label>
+      <input name="rateBeats" type="number" min="0.125" max="32" step="0.125" value="${modifier.rateBeats}">
+      <label>Depth</label>
+      <input name="depth" type="number" min="0" max="1" step="0.01" value="${modifier.depth}">
+      <label>Amount</label>
+      <input name="amount" type="number" min="0" max="1" step="0.01" value="${modifier.amount}">
+      <label>Phase</label>
+      <input name="phase" type="number" min="0" max="1" step="0.01" value="${modifier.phase}">
+      <button class="control-button full" type="button" data-action="delete-modifier">Delete Modifier</button>
+    </form>
+  `;
+}
+
+function createModifier(type) {
+  const presets = {
+    "Pulse every quarter note": { rateBeats: 1, depth: 0.45, amount: 0.55, target: "volume" },
+    "Pulse every eighth note": { rateBeats: 0.5, depth: 0.38, amount: 0.5, target: "volume" },
+    "Slow throb": { rateBeats: 4, depth: 0.35, amount: 0.45, target: "volume" },
+    Tremolo: { rateBeats: 0.25, depth: 0.25, amount: 0.4, target: "volume" },
+    "Volume swell": { rateBeats: 8, depth: 0.55, amount: 0.65, target: "volume" },
+    "Filter sweep": { rateBeats: 8, depth: 0.7, amount: 0.65, target: "filter" },
+    "Sidechain-style ducking": { rateBeats: 1, depth: 0.65, amount: 0.75, target: "volume" },
+  };
+  const preset = presets[type] || presets["Pulse every quarter note"];
+
+  return {
+    id: createId("modifier"),
+    type,
+    enabled: true,
+    rateBeats: preset.rateBeats,
+    depth: preset.depth,
+    amount: preset.amount,
+    phase: 0,
+    target: preset.target,
+  };
+}
+
+function clearObjectSelection(editor) {
+  editor.selectedNodeId = null;
+  editor.selectedSegmentId = null;
+  editor.selectedChordMarkerId = null;
+  editor.selectedModifierId = null;
+}
+
+function selectNode(editor, curveId, nodeId) {
+  editor.selectedCurveId = curveId;
+  editor.selectedNodeId = nodeId;
+  editor.selectedSegmentId = null;
+  editor.selectedChordMarkerId = null;
+  editor.selectedModifierId = null;
+}
+
+function selectSegment(editor, curveId, segmentId) {
+  editor.selectedCurveId = curveId;
+  editor.selectedNodeId = null;
+  editor.selectedSegmentId = segmentId;
+  editor.selectedChordMarkerId = null;
+  editor.selectedModifierId = null;
+}
+
+function selectChordMarker(editor, markerId) {
+  editor.selectedNodeId = null;
+  editor.selectedSegmentId = null;
+  editor.selectedChordMarkerId = markerId;
+  editor.selectedModifierId = null;
+}
+
+function selectModifier(editor, modifierId) {
+  editor.selectedNodeId = null;
+  editor.selectedSegmentId = null;
+  editor.selectedChordMarkerId = null;
+  editor.selectedModifierId = modifierId;
 }
 
 const CHORD_TYPE_LABELS = {
@@ -600,25 +874,31 @@ function openToneDesigner(editor) {
   editor.toneModal.hidden = false;
   editor.toneModal.innerHTML = `
     <div class="tone-dialog" role="dialog" aria-label="Tone Designer">
-      <div class="tone-dialog-header">
-        <h2>Tone Designer</h2>
-        <button class="control-button square" type="button" data-action="close-tone" aria-label="Close">x</button>
+      <div class="tone-fixed">
+        <div class="tone-dialog-header">
+          <h2>Tone Designer</h2>
+          <button class="control-button square" type="button" data-action="close-tone" aria-label="Close">x</button>
+        </div>
+        <canvas class="waveform-preview" width="520" height="150" aria-label="Waveform preview"></canvas>
+        <div class="tone-preview-row">
+          ${selectControl("previewNote", "Preview note", "C4", PREVIEW_NOTES)}
+          <button class="control-button" type="button" data-action="preview-synth">Preview Sound</button>
+        </div>
       </div>
-      <canvas class="waveform-preview" width="520" height="150" aria-label="Waveform preview"></canvas>
-      <div class="layer-grid">
-        ${settings.layers.map((layer, index) => renderLayerControl(layer, index)).join("")}
+      <div class="tone-scroll">
+        <div class="layer-grid">
+          ${settings.layers.map((layer, index) => renderLayerControl(layer, index)).join("")}
+        </div>
+        <canvas class="envelope-preview" width="520" height="150" aria-label="Envelope editor"></canvas>
+        <div class="tone-grid">
+          ${knobControl("attack", "Attack", settings.attack, 0.001, 5, 0.01)}
+          ${knobControl("decay", "Decay", settings.decay, 0.001, 5, 0.01)}
+          ${knobControl("sustain", "Sustain", settings.sustain, 0, 1, 0.01)}
+          ${knobControl("release", "Release", settings.release, 0.001, 8, 0.01)}
+          ${knobControl("filterCutoff", "Cutoff", settings.filterCutoff, 80, 16000, 10)}
+          ${knobControl("filterResonance", "Resonance", settings.filterResonance, 0.1, 20, 0.1)}
+        </div>
       </div>
-      <canvas class="envelope-preview" width="520" height="150" aria-label="Envelope editor"></canvas>
-      <div class="tone-grid">
-        ${knobControl("attack", "Attack", settings.attack, 0.001, 5, 0.01)}
-        ${knobControl("decay", "Decay", settings.decay, 0.001, 5, 0.01)}
-        ${knobControl("sustain", "Sustain", settings.sustain, 0, 1, 0.01)}
-        ${knobControl("release", "Release", settings.release, 0.001, 8, 0.01)}
-        ${knobControl("filterCutoff", "Cutoff", settings.filterCutoff, 80, 16000, 10)}
-        ${knobControl("filterResonance", "Resonance", settings.filterResonance, 0.1, 20, 0.1)}
-        ${selectControl("previewNote", "Preview note", "C4", PREVIEW_NOTES)}
-      </div>
-      <button class="control-button full" type="button" data-action="preview-synth">Preview Sound</button>
     </div>
   `;
 
@@ -633,6 +913,16 @@ function openToneDesigner(editor) {
   editor.toneModal.querySelectorAll("[data-synth-control]").forEach((control) => {
     control.addEventListener("input", syncSettings);
     control.addEventListener("change", syncSettings);
+  });
+  editor.toneModal.querySelectorAll(".knob-control input").forEach((control) => {
+    control.addEventListener("wheel", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const step = Number(control.step) || 0.01;
+      const direction = event.deltaY < 0 ? 1 : -1;
+      control.value = String(clamp(Number(control.value) + step * direction, Number(control.min), Number(control.max)));
+      control.dispatchEvent(new Event("input", { bubbles: true }));
+    }, { passive: false });
   });
   editor.toneModal.querySelector('[data-action="preview-synth"]').addEventListener("click", () => {
     syncSettings();
@@ -950,7 +1240,7 @@ function drawMarkerLane(context, grid, editor) {
       return;
     }
 
-    context.fillStyle = marker.id === editor.selectedMarkerId ? "#3aa7ff" : "#24496a";
+    context.fillStyle = marker.id === editor.selectedChordMarkerId ? "#3aa7ff" : "#24496a";
     context.fillRect(x, grid.markerY + 3, 116, grid.markerHeight - 6);
     context.fillStyle = "#f5f7fb";
     context.font = "12px system-ui, sans-serif";
@@ -1085,11 +1375,12 @@ function drawCurveNodes(context, grid, rowHeight, editor, curve, selected) {
       return;
     }
 
-    context.fillStyle = selected ? curve.color : "#8a93a3";
-    context.strokeStyle = selected ? "#071019" : "#353d4a";
-    context.lineWidth = selected ? 2 : 1;
+    const isSelectedNode = point.id === editor.selectedNodeId;
+    context.fillStyle = isSelectedNode ? "#ffffff" : selected ? curve.color : "#8a93a3";
+    context.strokeStyle = isSelectedNode ? curve.color : selected ? "#071019" : "#353d4a";
+    context.lineWidth = isSelectedNode ? 3 : selected ? 2 : 1;
     context.beginPath();
-    context.arc(x, y, selected ? 6 : 4, 0, Math.PI * 2);
+    context.arc(x, y, isSelectedNode ? 8 : selected ? 6 : 4, 0, Math.PI * 2);
     context.fill();
     context.stroke();
   });

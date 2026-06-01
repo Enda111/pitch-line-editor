@@ -28,11 +28,13 @@ export function createProjectScreen(root, { onCreate }) {
         <h1 id="new-project-title">Pitch Line Editor</h1>
         <p>Start with a key, chord guide, and empty pitch-line lanes.</p>
         <form class="project-form">
+          <section class="form-section start-manual-section">
+            <div class="section-title">Project</div>
           <div class="field">
             <label for="project-name">Project name</label>
             <input id="project-name" name="name" type="text" value="Untitled Project" autocomplete="off" required>
           </div>
-          <div class="form-grid">
+          <div class="form-grid start-choice-grid">
             <div class="field">
               <label for="project-key">Key</label>
               <select id="project-key" name="key">
@@ -46,6 +48,9 @@ export function createProjectScreen(root, { onCreate }) {
               </select>
             </div>
           </div>
+          </section>
+          <section class="form-section manual-settings-section">
+            <div class="section-title">Starting Chord</div>
           <div class="field">
             <label for="pitch-line-count">Starter pitch line count</label>
             <select id="pitch-line-count" name="pitchLineCount">
@@ -72,6 +77,9 @@ export function createProjectScreen(root, { onCreate }) {
               ${OCTAVES.map((octave) => `<option value="${octave}" ${octave === 4 ? "selected" : ""}>${octave}</option>`).join("")}
             </select>
           </div>
+          </section>
+          <section class="form-section manual-pattern-section">
+            <div class="section-title">Timing</div>
           <div class="field">
             <label for="project-bpm">BPM</label>
             <input id="project-bpm" name="bpm" type="number" min="40" max="240" step="1" value="120">
@@ -82,6 +90,9 @@ export function createProjectScreen(root, { onCreate }) {
               ${PATTERN_TEMPLATES.map((template) => `<option value="${template}">${template}</option>`).join("")}
             </select>
           </div>
+          </section>
+          <section class="form-section demo-settings-section">
+            <div class="section-title">Demo Samples</div>
           <div class="field">
             <label for="demo-sample">Demo Samples</label>
             <select id="demo-sample" name="demoSampleName">
@@ -89,6 +100,8 @@ export function createProjectScreen(root, { onCreate }) {
               ${DEMO_SAMPLES.map((sample) => `<option value="${sample.name}">${sample.name} - ${sample.mood}</option>`).join("")}
             </select>
           </div>
+            <div class="demo-summary readout" hidden></div>
+          </section>
           <button class="create-button" type="submit">Create Project</button>
         </form>
       </div>
@@ -100,13 +113,33 @@ export function createProjectScreen(root, { onCreate }) {
   const chordTypeSelect = root.querySelector("#chord-type");
   const customChordField = root.querySelector(".custom-chord-field");
   const demoSelect = root.querySelector("#demo-sample");
+  const demoSummary = root.querySelector(".demo-summary");
+  const manualSettings = root.querySelector(".manual-settings-section");
+  const manualPattern = root.querySelector(".manual-pattern-section");
+  const startChoiceGrid = root.querySelector(".start-choice-grid");
+  const chordTypeField = chordTypeSelect.closest(".field");
 
   const syncCustomKeyMode = () => {
     const isCustom = keySelect.value === "Custom";
+    const sample = DEMO_SAMPLES.find((item) => item.name === demoSelect.value);
     customChordField.hidden = !isCustom;
     chordTypeSelect.disabled = isCustom;
+    chordTypeField.hidden = isCustom;
+    startChoiceGrid.hidden = Boolean(sample);
+    manualSettings.hidden = Boolean(sample);
+    manualPattern.hidden = Boolean(sample);
+    demoSummary.hidden = !sample;
+
+    if (sample) {
+      demoSummary.innerHTML = `
+        <strong>${sample.name}</strong><br>
+        Mood: ${sample.mood}<br>
+        ${sample.key} ${sample.chordType}, octave ${sample.octave}, ${sample.bpm} BPM, ${sample.pitchLineCount} curves
+      `;
+    }
   };
   keySelect.addEventListener("change", syncCustomKeyMode);
+  demoSelect.addEventListener("change", syncCustomKeyMode);
   syncCustomKeyMode();
 
   demoSelect.addEventListener("change", () => {
