@@ -1,5 +1,6 @@
-const KEYS = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
-const CHORD_TYPES = ["major", "minor", "diminished", "augmented", "major 7", "minor 7", "dominant 7", "Custom"];
+const KEYS = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B", "Custom"];
+const NOTE_NAMES = KEYS.filter((key) => key !== "Custom");
+const CHORD_TYPES = ["major", "minor", "diminished", "augmented", "major 7", "minor 7", "dominant 7"];
 const OCTAVES = [2, 3, 4, 5, 6];
 const PATTERN_TEMPLATES = [
   "None",
@@ -55,7 +56,7 @@ export function createProjectScreen(root, { onCreate }) {
           <div class="field custom-chord-field" hidden>
             <label>Custom chord notes</label>
             <div class="note-selector">
-              ${KEYS.map((note) => `
+              ${NOTE_NAMES.map((note) => `
                 <label class="note-choice">
                   <input type="checkbox" name="customNotes" value="${note}" ${["C", "E", "G"].includes(note) ? "checked" : ""}>
                   <span>${note}</span>
@@ -86,12 +87,17 @@ export function createProjectScreen(root, { onCreate }) {
   `;
 
   const form = root.querySelector(".project-form");
+  const keySelect = root.querySelector("#project-key");
   const chordTypeSelect = root.querySelector("#chord-type");
   const customChordField = root.querySelector(".custom-chord-field");
 
-  chordTypeSelect.addEventListener("change", () => {
-    customChordField.hidden = chordTypeSelect.value !== "Custom";
-  });
+  const syncCustomKeyMode = () => {
+    const isCustom = keySelect.value === "Custom";
+    customChordField.hidden = !isCustom;
+    chordTypeSelect.disabled = isCustom;
+  };
+  keySelect.addEventListener("change", syncCustomKeyMode);
+  syncCustomKeyMode();
 
   form.addEventListener("submit", (event) => {
     event.preventDefault();

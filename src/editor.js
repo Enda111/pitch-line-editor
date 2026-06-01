@@ -23,6 +23,18 @@ const MAX_PIXELS_PER_BEAT = 160;
 const PIXELS_PER_SEMITONE = 18;
 const MARKER_LANE_HEIGHT = 34;
 const OCTAVES = [2, 3, 4, 5, 6];
+const CHORD_KEYS = [...NOTES, "Custom"];
+const DEFAULT_SYNTH_SETTINGS = {
+  waveform: "sine",
+  volume: -18,
+  attack: 0.01,
+  decay: 0.12,
+  sustain: 0.45,
+  release: 0.35,
+  filterCutoff: 12000,
+  filterResonance: 0.5,
+};
+const PREVIEW_NOTES = ["C3", "E3", "G3", "C4", "E4", "G4", "C5"];
 
 export function createEditor(root, project, audio) {
   if (!root) {
@@ -32,8 +44,10 @@ export function createEditor(root, project, audio) {
   project.octave = project.octave || 4;
   project.bpm = validateBpm(project.bpm);
   project.customNotes = project.customNotes?.length ? project.customNotes : ["C", "E", "G"];
+  project.chordType = project.key === "Custom" ? "major" : project.chordType;
   project.snapGrid = project.snapGrid || "Sixteenth note";
   project.snapPlayhead = project.snapPlayhead ?? true;
+  project.synthSettings = normalizeSynthSettings(project.synthSettings);
 
   root.innerHTML = `
     <section class="editor-screen" aria-label="Pitch line editor">
@@ -46,6 +60,7 @@ export function createEditor(root, project, audio) {
           <button class="control-button" type="button" data-action="play">Play</button>
           <button class="control-button" type="button" data-action="stop">Stop</button>
           <label class="toolbar-field">BPM <input name="bpm" type="number" min="40" max="240" step="1" value="${project.bpm}"></label>
+          <button class="control-button" type="button" data-action="tone-designer">Tone Designer</button>
           <button class="control-button square" type="button" data-action="zoom-out" aria-label="Zoom out">-</button>
           <button class="control-button square" type="button" data-action="zoom-in" aria-label="Zoom in">+</button>
         </div>
@@ -58,6 +73,7 @@ export function createEditor(root, project, audio) {
         </div>
         <aside class="inspector-panel" aria-label="Curve inspector"></aside>
       </div>
+      <div class="tone-modal" hidden></div>
     </section>
   `;
 
@@ -88,10 +104,12 @@ export function createEditor(root, project, audio) {
     scrollbar: root.querySelector(".timeline-scrollbar"),
     curveSidebar: root.querySelector(".curve-sidebar"),
     inspector: root.querySelector(".inspector-panel"),
+    toneModal: root.querySelector(".tone-modal"),
   };
 
   Object.assign(editor, createEditorApi(editor));
   audio.setBpm(project.bpm);
+  audio.setSynthSettings(project.synthSettings);
   bindControls(root, editor);
   attachEditorInteraction(editor);
 
@@ -206,6 +224,7 @@ function createEditorApi(editor) {
 function bindControls(root, editor) {
   root.querySelector('[data-action="play"]').addEventListener("click", () => togglePlayback(editor));
   root.querySelector('[data-action="stop"]').addEventListener("click", () => stopPlayback(editor));
+  root.querySelector('[data-action="tone-designer"]').addEventListener("click", () => openToneDesigner(editor));
   root.querySelector('[data-action="zoom-in"]').addEventListener("click", () => zoomTimeline(editor, 1));
   root.querySelector('[data-action="zoom-out"]').addEventListener("click", () => zoomTimeline(editor, -1));
   root.querySelector('[name="bpm"]').addEventListener("change", (event) => {
@@ -285,7 +304,7 @@ function renderInspector(editor) {
       <div class="marker-custom-notes" hidden>
         <label>Custom chord notes</label>
         <div class="note-selector">
-          ${NOTES.map((note) => `
+      ${NOTES.map((note) => `
             <label class="note-choice">
               <input type="checkbox" name="customNotes" value="${note}" ${editor.project.customNotes.includes(note) ? "checked" : ""}>
               <span>${note}</span>
@@ -303,7 +322,7 @@ function renderInspector(editor) {
       <div class="marker-list">
         ${editor.chordMarkers.map((item) => `
           <button class="marker-row ${item.id === editor.selectedMarkerId ? "selected" : ""}" type="button" data-marker-id="${item.id}">
-            ${item.key}${item.octave} ${item.chordType} @ beat ${roundBeat(item.beat)}
+            ${markerLabel(item)} @ beat ${roundBeat(item.beat)}
           </button>
         `).join("") || `<div class="readout">No markers</div>`}
       </div>
@@ -339,7 +358,7 @@ function renderInspector(editor) {
       key: chord.key,
       chordType: chord.chordType,
       octave: Number(formData.get("octave")),
-      customNotes: formData.getAll("customNotes").map(String),
+      customNotes: chord.key === "Custom" ? formData.getAll("customNotes").map(String) : [],
       defaultDuration: Number(formData.get("duration")) || 0,
     });
     editor.audio.update(editor.toneCurves);
@@ -351,14 +370,14 @@ function renderInspector(editor) {
     const form = event.currentTarget.closest("form");
     const formData = new FormData(form);
     const chord = parseChordChoice(String(formData.get("chordChoice")));
-    const targets = getChordTargets(chord.key, chord.chordType, 4, Number(formData.get("octave")), formData.getAll("customNotes").map(String));
+    const targets = getChordTargets(chord.key, chord.chordType, 4, Number(formData.get("octave")), chord.key === "Custom" ? formData.getAll("customNotes").map(String) : []);
     editor.audio.previewChord(targets.map((target) => target.frequency));
   });
 
   const chordChoice = editor.inspector.querySelector('[name="chordChoice"]');
   const markerCustomNotes = editor.inspector.querySelector(".marker-custom-notes");
   const syncCustomNotes = () => {
-    markerCustomNotes.hidden = parseChordChoice(chordChoice.value).chordType !== "Custom";
+    markerCustomNotes.hidden = parseChordChoice(chordChoice.value).key !== "Custom";
   };
   chordChoice.addEventListener("change", syncCustomNotes);
   syncCustomNotes();
@@ -367,7 +386,7 @@ function renderInspector(editor) {
   const editCustomNotes = editor.inspector.querySelector(".edit-marker-custom-notes");
   if (editChordChoice && editCustomNotes) {
     const syncEditCustomNotes = () => {
-      editCustomNotes.hidden = parseChordChoice(editChordChoice.value).chordType !== "Custom";
+      editCustomNotes.hidden = parseChordChoice(editChordChoice.value).key !== "Custom";
     };
     editChordChoice.addEventListener("change", syncEditCustomNotes);
     syncEditCustomNotes();
@@ -389,7 +408,7 @@ function renderInspector(editor) {
       key: chord.key,
       chordType: chord.chordType,
       octave: Number(formData.get("editOctave")),
-      customNotes: formData.getAll("editCustomNotes").map(String),
+      customNotes: chord.key === "Custom" ? formData.getAll("editCustomNotes").map(String) : [],
     });
     editor.audio.update(editor.toneCurves);
     editor.renderSidebars();
@@ -400,7 +419,7 @@ function renderInspector(editor) {
     const form = event.currentTarget.closest("form");
     const formData = new FormData(form);
     const chord = parseChordChoice(String(formData.get("editChordChoice")));
-    const targets = getChordTargets(chord.key, chord.chordType, 4, Number(formData.get("editOctave")), formData.getAll("editCustomNotes").map(String));
+    const targets = getChordTargets(chord.key, chord.chordType, 4, Number(formData.get("editOctave")), chord.key === "Custom" ? formData.getAll("editCustomNotes").map(String) : []);
     editor.audio.previewChord(targets.map((target) => target.frequency));
   });
 
@@ -421,16 +440,21 @@ const CHORD_TYPE_LABELS = {
   "major 7": true,
   "minor 7": true,
   "dominant 7": true,
-  Custom: true,
 };
 
 function renderChordChoices(editor, suggested) {
   const choices = [];
-  NOTES.forEach((key) => {
+  CHORD_KEYS.forEach((key) => {
+    if (key === "Custom") {
+      const value = "Custom|major";
+      choices.push(`<option value="${value}" ${editor.project.key === "Custom" ? "selected" : ""}>Custom</option>`);
+      return;
+    }
+
     Object.keys(CHORD_TYPE_LABELS).forEach((chordType) => {
       const value = `${key}|${chordType}`;
       const isSelected = key === editor.project.key && chordType === editor.project.chordType;
-      const label = chordType === "Custom" ? `${key} Custom` : `${key} ${chordType}`;
+      const label = `${key} ${chordType}`;
       choices.push(`<option value="${value}" ${isSelected ? "selected" : ""}>${label}${suggested.has(value) ? " - Suggested" : ""}</option>`);
     });
   });
@@ -448,11 +472,17 @@ function renderMarkerEditor(editor, marker, suggested) {
     <form class="edit-marker-form inspector-section">
       <label>Edit selected marker</label>
       <select name="editChordChoice">
-        ${NOTES.flatMap((key) => Object.keys(CHORD_TYPE_LABELS).map((chordType) => {
+        ${CHORD_KEYS.flatMap((key) => {
+          if (key === "Custom") {
+            return [`<option value="Custom|major" ${marker.key === "Custom" ? "selected" : ""}>Custom</option>`];
+          }
+
+          return Object.keys(CHORD_TYPE_LABELS).map((chordType) => {
           const value = `${key}|${chordType}`;
-          const label = chordType === "Custom" ? `${key} Custom` : `${key} ${chordType}`;
+          const label = `${key} ${chordType}`;
           return `<option value="${value}" ${value === selectedValue ? "selected" : ""}>${label}${suggested.has(value) ? " - Suggested" : ""}</option>`;
-        })).join("")}
+          });
+        }).join("")}
       </select>
       <select name="editOctave">
         ${OCTAVES.map((octave) => `<option value="${octave}" ${octave === marker.octave ? "selected" : ""}>Octave ${octave}</option>`).join("")}
@@ -505,6 +535,147 @@ function stopPlayback(editor) {
   editor.playButton.textContent = "Play";
   editor.updateScrollbar();
   editor.draw();
+}
+
+function openToneDesigner(editor) {
+  const settings = editor.project.synthSettings;
+  editor.toneModal.hidden = false;
+  editor.toneModal.innerHTML = `
+    <div class="tone-dialog" role="dialog" aria-label="Tone Designer">
+      <div class="tone-dialog-header">
+        <h2>Tone Designer</h2>
+        <button class="control-button square" type="button" data-action="close-tone" aria-label="Close">x</button>
+      </div>
+      <canvas class="waveform-preview" width="520" height="150" aria-label="Waveform preview"></canvas>
+      <div class="tone-grid">
+        ${selectControl("waveform", "Waveform", settings.waveform, ["sine", "square", "triangle", "sawtooth"])}
+        ${numberControl("volume", "Volume", settings.volume, -48, 0, 1)}
+        ${numberControl("attack", "Attack", settings.attack, 0.001, 5, 0.01)}
+        ${numberControl("decay", "Decay", settings.decay, 0.001, 5, 0.01)}
+        ${numberControl("sustain", "Sustain", settings.sustain, 0, 1, 0.01)}
+        ${numberControl("release", "Release", settings.release, 0.001, 8, 0.01)}
+        ${numberControl("filterCutoff", "Filter cutoff", settings.filterCutoff, 80, 16000, 10)}
+        ${numberControl("filterResonance", "Filter resonance", settings.filterResonance, 0.1, 20, 0.1)}
+        ${selectControl("previewNote", "Preview note", "C4", PREVIEW_NOTES)}
+      </div>
+      <button class="control-button full" type="button" data-action="preview-synth">Preview Sound</button>
+    </div>
+  `;
+
+  const syncSettings = () => {
+    const formSettings = readSynthSettings(editor.toneModal);
+    editor.project.synthSettings = formSettings;
+    editor.audio.setSynthSettings(formSettings);
+    drawWaveform(editor.toneModal.querySelector(".waveform-preview"), formSettings.waveform);
+  };
+
+  editor.toneModal.querySelectorAll("[data-synth-control]").forEach((control) => {
+    control.addEventListener("input", syncSettings);
+    control.addEventListener("change", syncSettings);
+  });
+  editor.toneModal.querySelector('[data-action="preview-synth"]').addEventListener("click", () => {
+    syncSettings();
+    editor.audio.previewSynth(editor.toneModal.querySelector('[name="previewNote"]').value);
+  });
+  editor.toneModal.querySelector('[data-action="close-tone"]').addEventListener("click", () => {
+    editor.toneModal.hidden = true;
+  });
+  editor.toneModal.addEventListener("click", (event) => {
+    if (event.target === editor.toneModal) {
+      editor.toneModal.hidden = true;
+    }
+  }, { once: true });
+  drawWaveform(editor.toneModal.querySelector(".waveform-preview"), settings.waveform);
+}
+
+function selectControl(name, label, value, options) {
+  return `
+    <label class="tone-control">${label}
+      <select name="${name}" ${name === "previewNote" ? "" : "data-synth-control"}>
+        ${options.map((option) => `<option value="${option}" ${option === value ? "selected" : ""}>${option}</option>`).join("")}
+      </select>
+    </label>
+  `;
+}
+
+function numberControl(name, label, value, min, max, step) {
+  return `
+    <label class="tone-control">${label}
+      <input data-synth-control name="${name}" type="number" min="${min}" max="${max}" step="${step}" value="${value}">
+    </label>
+  `;
+}
+
+function readSynthSettings(root) {
+  const settings = {};
+  Object.keys(DEFAULT_SYNTH_SETTINGS).forEach((key) => {
+    const control = root.querySelector(`[name="${key}"]`);
+    settings[key] = key === "waveform" ? control.value : Number(control.value);
+  });
+  return normalizeSynthSettings(settings);
+}
+
+function normalizeSynthSettings(settings = {}) {
+  return {
+    waveform: ["sine", "square", "triangle", "sawtooth"].includes(settings.waveform) ? settings.waveform : DEFAULT_SYNTH_SETTINGS.waveform,
+    volume: clamp(Number(settings.volume), -48, 0),
+    attack: clamp(Number(settings.attack), 0.001, 5),
+    decay: clamp(Number(settings.decay), 0.001, 5),
+    sustain: clamp(Number(settings.sustain), 0, 1),
+    release: clamp(Number(settings.release), 0.001, 8),
+    filterCutoff: clamp(Number(settings.filterCutoff), 80, 16000),
+    filterResonance: clamp(Number(settings.filterResonance), 0.1, 20),
+  };
+}
+
+function drawWaveform(canvas, waveform) {
+  const context = canvas.getContext("2d");
+  const width = canvas.width;
+  const height = canvas.height;
+  const centerY = height / 2;
+  const amplitude = height * 0.32;
+
+  context.clearRect(0, 0, width, height);
+  context.fillStyle = "#090d13";
+  context.fillRect(0, 0, width, height);
+  context.strokeStyle = "rgba(255, 255, 255, 0.12)";
+  context.beginPath();
+  context.moveTo(0, centerY);
+  context.lineTo(width, centerY);
+  context.stroke();
+  context.strokeStyle = "#3aa7ff";
+  context.lineWidth = 3;
+  context.beginPath();
+
+  for (let x = 0; x <= width; x += 1) {
+    const phase = (x / width) * Math.PI * 4;
+    const value = waveformValue(waveform, phase);
+    const y = centerY - value * amplitude;
+
+    if (x === 0) {
+      context.moveTo(x, y);
+    } else {
+      context.lineTo(x, y);
+    }
+  }
+
+  context.stroke();
+}
+
+function waveformValue(waveform, phase) {
+  if (waveform === "square") {
+    return Math.sin(phase) >= 0 ? 1 : -1;
+  }
+
+  if (waveform === "triangle") {
+    return (2 / Math.PI) * Math.asin(Math.sin(phase));
+  }
+
+  if (waveform === "sawtooth") {
+    return 2 * (phase / (Math.PI * 2) - Math.floor(0.5 + phase / (Math.PI * 2)));
+  }
+
+  return Math.sin(phase);
 }
 
 function zoomTimeline(editor, direction) {
@@ -588,7 +759,7 @@ function drawMarkerLane(context, grid, editor) {
     context.font = "12px system-ui, sans-serif";
     context.textAlign = "left";
     context.textBaseline = "middle";
-    context.fillText(`${marker.key}${marker.octave} ${marker.chordType}`, x + 8, grid.markerY + grid.markerHeight / 2);
+    context.fillText(markerLabel(marker), x + 8, grid.markerY + grid.markerHeight / 2);
   });
 }
 
@@ -771,13 +942,17 @@ function drawLabels(context, grid, rowHeight, editor) {
   context.textAlign = "left";
   context.fillStyle = "#7fd0ff";
   context.fillText("Chord markers", grid.x, grid.markerY - 4);
-  context.fillText(`${editor.project.key}${editor.project.octave} ${editor.project.chordType}`, grid.x + 10, grid.y + 14);
+  context.fillText(markerLabel(editor.project), grid.x + 10, grid.y + 14);
   context.strokeStyle = "rgba(255, 255, 255, 0.12)";
   context.strokeRect(grid.x, grid.y, grid.width, grid.height);
 }
 
 function roundBeat(value) {
   return Math.round(value * 100) / 100;
+}
+
+function markerLabel(chord) {
+  return chord.key === "Custom" ? `Custom${chord.octave}` : `${chord.key}${chord.octave} ${chord.chordType}`;
 }
 
 function lineColor(index) {

@@ -1,4 +1,14 @@
 const DEFAULT_BPM = 120;
+const DEFAULT_SYNTH_SETTINGS = {
+  waveform: "sine",
+  volume: -18,
+  attack: 0.01,
+  decay: 0.12,
+  sustain: 0.45,
+  release: 0.35,
+  filterCutoff: 12000,
+  filterResonance: 0.5,
+};
 
 export function createAudioEngine() {
   const engine = {
@@ -7,6 +17,7 @@ export function createAudioEngine() {
     activeLines: [],
     pausedBeat: 0,
     lineVoices: new Map(),
+    synthSettings: { ...DEFAULT_SYNTH_SETTINGS },
   };
 
   return {
@@ -29,6 +40,16 @@ export function createAudioEngine() {
       if (window.Tone) {
         window.Tone.Transport.bpm.value = bpm;
       }
+    },
+    setSynthSettings(settings) {
+      engine.synthSettings = normalizeSynthSettings(settings);
+
+      engine.lineVoices.forEach((voice) => {
+        voice.oscillator.type = engine.synthSettings.waveform;
+        voice.output.gain.rampTo(volumeToGain(engine.synthSettings.volume), 0.03);
+        voice.filter.frequency.rampTo(engine.synthSettings.filterCutoff, 0.03);
+        voice.filter.Q.rampTo(engine.synthSettings.filterResonance, 0.03);
+      });
     },
     async toggle(lines, startBeat = engine.pausedBeat) {
       if (engine.isPlaying) {
@@ -83,13 +104,33 @@ export function createAudioEngine() {
 
       await window.Tone.start();
       const synth = new window.Tone.PolySynth(window.Tone.Synth, {
-        oscillator: { type: "sine" },
-        envelope: { attack: 0.01, decay: 0.12, sustain: 0.45, release: 0.35 },
-        volume: -12,
+        oscillator: { type: engine.synthSettings.waveform },
+        envelope: envelopeSettings(engine.synthSettings),
+        volume: engine.synthSettings.volume,
+      });
+      const filter = new window.Tone.Filter({
+        frequency: engine.synthSettings.filterCutoff,
+        Q: engine.synthSettings.filterResonance,
+        type: "lowpass",
       }).toDestination();
 
+      synth.connect(filter);
       synth.triggerAttackRelease(frequencies, "0.8");
-      setTimeout(() => synth.dispose(), 1200);
+      setTimeout(() => {
+        synth.dispose();
+        filter.dispose();
+      }, 1200);
+      return true;
+    },
+    async previewSynth(note) {
+      if (!window.Tone) {
+        return false;
+      }
+
+      await window.Tone.start();
+      const synth = createPreviewSynth(engine.synthSettings);
+      synth.triggerAttackRelease(note, "0.8");
+      setTimeout(() => synth.dispose(), 1400);
       return true;
     },
     stop() {
@@ -131,14 +172,21 @@ function startVoices(engine, lines, startBeat) {
     const frequency = frequencyAtBeat(line, startBeat);
     const oscillator = new window.Tone.Oscillator({
       frequency: frequency || 440,
-      type: "sine",
-      volume: -18,
+      type: engine.synthSettings.waveform,
     });
     const gain = new window.Tone.Gain(frequency === null ? 0 : 0.18).toDestination();
+    const filter = new window.Tone.Filter({
+      frequency: engine.synthSettings.filterCutoff,
+      Q: engine.synthSettings.filterResonance,
+      type: "lowpass",
+    });
+    const output = new window.Tone.Gain(volumeToGain(engine.synthSettings.volume)).toDestination();
 
     oscillator.connect(gain);
+    gain.connect(filter);
+    filter.connect(output);
     oscillator.start();
-    engine.lineVoices.set(line.id, { oscillator, gain });
+    engine.lineVoices.set(line.id, { oscillator, gain, filter, output });
   });
 }
 
@@ -165,12 +213,66 @@ function updateVoices(engine) {
 }
 
 function stopVoices(engine) {
-  engine.lineVoices.forEach(({ oscillator, gain }) => {
+  engine.lineVoices.forEach(({ oscillator, gain, filter, output }) => {
     oscillator.stop();
     oscillator.dispose();
     gain.dispose();
+    filter.dispose();
+    output.dispose();
   });
   engine.lineVoices.clear();
+}
+
+function normalizeSynthSettings(settings = {}) {
+  return {
+    waveform: ["sine", "square", "triangle", "sawtooth"].includes(settings.waveform) ? settings.waveform : DEFAULT_SYNTH_SETTINGS.waveform,
+    volume: clampNumber(settings.volume, -48, 0, DEFAULT_SYNTH_SETTINGS.volume),
+    attack: clampNumber(settings.attack, 0.001, 5, DEFAULT_SYNTH_SETTINGS.attack),
+    decay: clampNumber(settings.decay, 0.001, 5, DEFAULT_SYNTH_SETTINGS.decay),
+    sustain: clampNumber(settings.sustain, 0, 1, DEFAULT_SYNTH_SETTINGS.sustain),
+    release: clampNumber(settings.release, 0.001, 8, DEFAULT_SYNTH_SETTINGS.release),
+    filterCutoff: clampNumber(settings.filterCutoff, 80, 16000, DEFAULT_SYNTH_SETTINGS.filterCutoff),
+    filterResonance: clampNumber(settings.filterResonance, 0.1, 20, DEFAULT_SYNTH_SETTINGS.filterResonance),
+  };
+}
+
+function envelopeSettings(settings) {
+  return {
+    attack: settings.attack,
+    decay: settings.decay,
+    sustain: settings.sustain,
+    release: settings.release,
+  };
+}
+
+function createPreviewSynth(settings) {
+  const synth = new window.Tone.Synth({
+    oscillator: { type: settings.waveform },
+    envelope: envelopeSettings(settings),
+    volume: settings.volume,
+  });
+  const filter = new window.Tone.Filter({
+    frequency: settings.filterCutoff,
+    Q: settings.filterResonance,
+    type: "lowpass",
+  }).toDestination();
+
+  synth.connect(filter);
+  const originalDispose = synth.dispose.bind(synth);
+  synth.dispose = () => {
+    originalDispose();
+    filter.dispose();
+  };
+  return synth;
+}
+
+function volumeToGain(db) {
+  return 10 ** (db / 20);
+}
+
+function clampNumber(value, min, max, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.min(Math.max(number, min), max) : fallback;
 }
 
 function frequencyAtBeat(line, beat) {

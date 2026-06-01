@@ -52,7 +52,7 @@ export function getChordRows(key, chordType, count, octave = 4, customNotes = []
 }
 
 export function getChordTargets(key, chordType, count, octave = 4, customNotes = []) {
-  if (chordType === "Custom") {
+  if (key === "Custom") {
     return getCustomChordTargets(customNotes, count, octave);
   }
 

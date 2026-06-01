@@ -1,5 +1,5 @@
-import { addChordMarker } from "./chords.js";
-import { NOTES } from "./music.js";
+import { addChordMarker, sortCurve } from "./chords.js";
+import { NOTES, pointFromMidi } from "./music.js";
 
 const MAJOR_DEGREES = {
   I: [0, "major"],
@@ -41,13 +41,15 @@ const TRANSITION_SETS = [
 export function applyPatternTemplate(editor) {
   const template = TEMPLATE_STEPS[editor.project.patternTemplate];
 
-  if (!template || editor.project.patternTemplate === "None") {
+  if (!template || editor.project.patternTemplate === "None" || editor.project.key === "Custom") {
     return;
   }
 
+  let lastMarker = null;
+
   if (editor.project.patternTemplate === "Simple sustained chord") {
     const durations = Object.fromEntries(editor.toneCurves.map((curve) => [curve.id, 0]));
-    addChordMarker(editor, {
+    lastMarker = addChordMarker(editor, {
       beat: 12,
       key: editor.project.key,
       chordType: editor.project.chordType,
@@ -57,6 +59,7 @@ export function applyPatternTemplate(editor) {
       durationPerCurve: durations,
       transitionTypes: ["linear"],
     });
+    addFinalSustain(editor, lastMarker);
     return;
   }
 
@@ -68,7 +71,7 @@ export function applyPatternTemplate(editor) {
       editor.toneCurves.map((curve, curveIndex) => [curve.id, 0.75 + ((curveIndex + index) % 3) * 0.5]),
     );
 
-    addChordMarker(editor, {
+    lastMarker = addChordMarker(editor, {
       beat,
       key: chord.key,
       chordType: chord.chordType,
@@ -79,10 +82,14 @@ export function applyPatternTemplate(editor) {
       transitionTypes: TRANSITION_SETS[index % TRANSITION_SETS.length],
     });
   });
+
+  if (lastMarker) {
+    addFinalSustain(editor, lastMarker);
+  }
 }
 
 export function getSuggestedChordChoices(previous, project) {
-  if (previous?.chordType === "Custom" || project.chordType === "Custom") {
+  if (previous?.key === "Custom" || project.key === "Custom") {
     return new Set();
   }
 
@@ -94,6 +101,23 @@ export function getSuggestedChordChoices(previous, project) {
     const chord = chordFromDegree(project.key, move, mode === "minor" ? "minor" : "major");
     return `${chord.key}|${chord.chordType}`;
   }));
+}
+
+function addFinalSustain(editor, marker, sustainBeats = 4) {
+  editor.toneCurves.forEach((curve) => {
+    const target = curve.points.find((point) => point.markerId === marker.id && point.markerRole === "target");
+
+    if (!target) {
+      return;
+    }
+
+    curve.points.push({
+      ...pointFromMidi(marker.beat + sustainBeats, target.midi),
+      markerId: marker.id,
+      markerRole: "final-sustain",
+    });
+    sortCurve(curve);
+  });
 }
 
 function chordFromDegree(key, degree, fallbackType) {
