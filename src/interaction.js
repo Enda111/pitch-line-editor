@@ -142,7 +142,7 @@ function dragSelectedNode(editor, event) {
     return;
   }
 
-  point.beat = position.beat;
+  point.beat = editor.snapTime(position.beat);
   point.row = position.row;
   point.midi = position.midi;
   point.frequency = position.frequency;
@@ -163,7 +163,7 @@ function addNodeAtEvent(editor, event) {
     return;
   }
 
-  curve.points.push(pointFromRow(position.beat, position.row));
+  curve.points.push(pointFromRow(editor.snapTime(position.beat), position.row));
   sortCurve(curve);
   editor.selectedSegmentId = null;
   editor.audio.update(editor.toneCurves);

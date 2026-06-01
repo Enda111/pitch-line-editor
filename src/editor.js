@@ -29,6 +29,8 @@ export function createEditor(root, project, audio) {
 
   project.octave = project.octave || 4;
   project.customNotes = project.customNotes?.length ? project.customNotes : ["C", "E", "G"];
+  project.snapTimeEnabled = project.snapTimeEnabled ?? true;
+  project.snapTimeStepSeconds = validateSnapTimeStep(project.snapTimeStepSeconds);
 
   root.innerHTML = `
     <section class="editor-screen" aria-label="Pitch line editor">
@@ -68,6 +70,8 @@ export function createEditor(root, project, audio) {
     selectedCurveId: "curve-1",
     selectedSegmentId: null,
     selectedMarkerId: null,
+    snapTimeEnabled: project.snapTimeEnabled,
+    snapTimeStepSeconds: project.snapTimeStepSeconds,
     pixelsPerBeat: DEFAULT_PIXELS_PER_BEAT,
     verticalScrollRow: Math.max(0, Math.min(...guideRows) - 6),
     scrollBeat: 0,
@@ -173,6 +177,14 @@ function createEditorApi(editor) {
     rowFromY(y, grid) {
       return clamp(Math.round((y - grid.y) / PIXELS_PER_SEMITONE + editor.verticalScrollRow - 0.5), 0, SEMITONE_ROWS - 1);
     },
+    snapTime(time) {
+      if (!editor.snapTimeEnabled) {
+        return time;
+      }
+
+      const step = validateSnapTimeStep(editor.snapTimeStepSeconds);
+      return Math.round(time / step) * step;
+    },
     rowToMidi,
     midiToFrequency,
     draw() {
@@ -233,6 +245,14 @@ function renderInspector(editor) {
       <label>Selected curve</label>
       <div class="readout">${curve?.name || "None"}</div>
     </div>
+    <div class="inspector-section snap-section">
+      <label class="checkbox-row">
+        <input type="checkbox" name="snapTimeEnabled" ${editor.snapTimeEnabled ? "checked" : ""}>
+        <span>Snap Time</span>
+      </label>
+      <label for="snap-time-step">Snap Step Seconds</label>
+      <input id="snap-time-step" name="snapTimeStepSeconds" type="number" min="0.01" step="0.01" value="${editor.snapTimeStepSeconds}">
+    </div>
     <div class="inspector-section">
       <label for="segment-transition">Selected segment</label>
       <select id="segment-transition" ${segment ? "" : "disabled"}>
@@ -283,6 +303,18 @@ function renderInspector(editor) {
       setSegmentTransition(selectedCurve, editor.selectedSegmentId, event.target.value);
       editor.draw();
     }
+  });
+
+  editor.inspector.querySelector('[name="snapTimeEnabled"]').addEventListener("change", (event) => {
+    editor.snapTimeEnabled = event.target.checked;
+    editor.project.snapTimeEnabled = editor.snapTimeEnabled;
+  });
+
+  editor.inspector.querySelector('[name="snapTimeStepSeconds"]').addEventListener("change", (event) => {
+    const step = validateSnapTimeStep(Number(event.target.value));
+    editor.snapTimeStepSeconds = step;
+    editor.project.snapTimeStepSeconds = step;
+    event.target.value = String(step);
   });
 
   editor.inspector.querySelector(".marker-form").addEventListener("submit", (event) => {
@@ -725,6 +757,11 @@ function drawLabels(context, grid, rowHeight, editor) {
 
 function roundBeat(value) {
   return Math.round(value * 100) / 100;
+}
+
+function validateSnapTimeStep(value) {
+  const numericValue = Number(value);
+  return Number.isFinite(numericValue) && numericValue > 0 ? numericValue : 0.25;
 }
 
 function lineColor(index) {

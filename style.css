@@ -259,6 +259,17 @@ select {
   font-weight: 800;
 }
 
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.checkbox-row input {
+  width: auto;
+  min-height: auto;
+}
+
 .inspector-section input,
 .inspector-section select {
   width: 100%;
