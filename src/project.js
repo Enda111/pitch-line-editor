@@ -1,6 +1,18 @@
 const KEYS = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
-const CHORD_TYPES = ["major", "minor", "diminished", "augmented", "major 7", "minor 7", "dominant 7"];
+const CHORD_TYPES = ["major", "minor", "diminished", "augmented", "major 7", "minor 7", "dominant 7", "Custom"];
 const OCTAVES = [2, 3, 4, 5, 6];
+const PATTERN_TEMPLATES = [
+  "None",
+  "Simple sustained chord",
+  "I-V-vi-IV",
+  "vi-IV-I-V",
+  "ii-V-I",
+  "i-VI-III-VII",
+  "i-iv-v-i",
+  "Slow evolving pad",
+  "Rising tension",
+  "Falling resolution",
+];
 
 export function createProjectScreen(root, { onCreate }) {
   if (!root) {
@@ -40,10 +52,27 @@ export function createProjectScreen(root, { onCreate }) {
               }).join("")}
             </select>
           </div>
+          <div class="field custom-chord-field" hidden>
+            <label>Custom chord notes</label>
+            <div class="note-selector">
+              ${KEYS.map((note) => `
+                <label class="note-choice">
+                  <input type="checkbox" name="customNotes" value="${note}" ${["C", "E", "G"].includes(note) ? "checked" : ""}>
+                  <span>${note}</span>
+                </label>
+              `).join("")}
+            </div>
+          </div>
           <div class="field">
             <label for="starting-octave">Starting octave</label>
             <select id="starting-octave" name="octave">
               ${OCTAVES.map((octave) => `<option value="${octave}" ${octave === 4 ? "selected" : ""}>${octave}</option>`).join("")}
+            </select>
+          </div>
+          <div class="field">
+            <label for="pattern-template">Pattern Template</label>
+            <select id="pattern-template" name="patternTemplate">
+              ${PATTERN_TEMPLATES.map((template) => `<option value="${template}">${template}</option>`).join("")}
             </select>
           </div>
           <button class="create-button" type="submit">Create Project</button>
@@ -53,6 +82,12 @@ export function createProjectScreen(root, { onCreate }) {
   `;
 
   const form = root.querySelector(".project-form");
+  const chordTypeSelect = root.querySelector("#chord-type");
+  const customChordField = root.querySelector(".custom-chord-field");
+
+  chordTypeSelect.addEventListener("change", () => {
+    customChordField.hidden = chordTypeSelect.value !== "Custom";
+  });
 
   form.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -65,6 +100,8 @@ export function createProjectScreen(root, { onCreate }) {
       chordType: String(formData.get("chordType")),
       pitchLineCount: Number(formData.get("pitchLineCount")),
       octave: Number(formData.get("octave")),
+      customNotes: formData.getAll("customNotes").map(String),
+      patternTemplate: String(formData.get("patternTemplate")),
     });
   });
 }

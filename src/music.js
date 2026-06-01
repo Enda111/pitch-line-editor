@@ -22,11 +22,15 @@ export const CHORD_INTERVALS = {
   "dominant 7": [0, 4, 7, 10],
 };
 
-export function getChordRows(key, chordType, count, octave = 4) {
-  return getChordTargets(key, chordType, count, octave).map((target) => target.row);
+export function getChordRows(key, chordType, count, octave = 4, customNotes = []) {
+  return getChordTargets(key, chordType, count, octave, customNotes).map((target) => target.row);
 }
 
-export function getChordTargets(key, chordType, count, octave = 4) {
+export function getChordTargets(key, chordType, count, octave = 4, customNotes = []) {
+  if (chordType === "Custom") {
+    return getCustomChordTargets(customNotes, count, octave);
+  }
+
   const rootIndex = NOTES.indexOf(key);
   const intervals = CHORD_INTERVALS[chordType] || CHORD_INTERVALS.major;
   const rootMidi = 12 * (octave + 1) + rootIndex;
@@ -35,6 +39,22 @@ export function getChordTargets(key, chordType, count, octave = 4) {
     const octaveLift = Math.floor(index / intervals.length);
     const interval = intervals[index % intervals.length] + octaveLift * 12;
     const midi = rootMidi + interval;
+    return {
+      row: midiToRow(midi),
+      midi,
+      frequency: midiToFrequency(midi),
+    };
+  });
+}
+
+export function getCustomChordTargets(customNotes, count, octave = 4) {
+  const selected = NOTES.filter((note) => customNotes.includes(note));
+  const notes = selected.length ? selected : ["C"];
+
+  return Array.from({ length: count }, (_, index) => {
+    const note = notes[index % notes.length];
+    const octaveLift = Math.floor(index / notes.length);
+    const midi = 12 * (octave + 1 + octaveLift) + NOTES.indexOf(note);
     return {
       row: midiToRow(midi),
       midi,

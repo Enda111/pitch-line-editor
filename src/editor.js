@@ -1,5 +1,6 @@
-import { addChordMarker, setMarkerCurveDuration, setSegmentTransition, sortCurve } from "./chords.js";
+import { addChordMarker, setMarkerCurveDuration, setSegmentTransition, sortCurve, updateChordMarker } from "./chords.js";
 import { attachEditorInteraction } from "./interaction.js";
+import { applyPatternTemplate, getSuggestedChordChoices } from "./patterns.js";
 import {
   NOTES,
   TOTAL_BEATS,
@@ -27,6 +28,7 @@ export function createEditor(root, project, audio) {
   }
 
   project.octave = project.octave || 4;
+  project.customNotes = project.customNotes?.length ? project.customNotes : ["C", "E", "G"];
 
   root.innerHTML = `
     <section class="editor-screen" aria-label="Pitch line editor">
@@ -54,7 +56,7 @@ export function createEditor(root, project, audio) {
   `;
 
   const canvas = root.querySelector("canvas");
-  const guideRows = getChordRows(project.key, project.chordType, project.pitchLineCount, project.octave);
+  const guideRows = getChordRows(project.key, project.chordType, project.pitchLineCount, project.octave, project.customNotes);
   const editor = {
     canvas,
     context: canvas.getContext("2d"),
@@ -96,6 +98,8 @@ export function createEditor(root, project, audio) {
     togglePlayback(editor);
   };
 
+  editor.renderSidebars();
+  applyPatternTemplate(editor);
   editor.renderSidebars();
   editor.draw();
   animate(editor);
@@ -220,6 +224,8 @@ function renderInspector(editor) {
   const curve = editor.selectedCurve();
   const segment = editor.selectedSegment();
   const marker = editor.chordMarkers.find((item) => item.id === editor.selectedMarkerId);
+  const previousChord = editor.chordMarkers.filter((item) => item.time <= editor.playheadBeat).at(-1) || editor.project;
+  const suggested = getSuggestedChordChoices(previousChord, editor.project);
 
   editor.inspector.innerHTML = `
     <div class="panel-title">Inspector</div>
@@ -236,15 +242,23 @@ function renderInspector(editor) {
     <form class="marker-form inspector-section">
       <label>Add chord marker</label>
       <div class="readout">Marker time: ${roundBeat(editor.playheadBeat)}</div>
-      <div class="inline-grid">
-        <select name="key">${NOTES.map((note) => `<option value="${note}" ${note === editor.project.key ? "selected" : ""}>${note}</option>`).join("")}</select>
-        <select name="chordType">
-          ${Object.keys(CHORD_TYPE_LABELS).map((type) => `<option value="${type}" ${type === editor.project.chordType ? "selected" : ""}>${type}</option>`).join("")}
-        </select>
-      </div>
+      <select name="chordChoice">
+        ${renderChordChoices(editor, suggested)}
+      </select>
       <select name="octave">
         ${OCTAVES.map((octave) => `<option value="${octave}" ${octave === editor.project.octave ? "selected" : ""}>Octave ${octave}</option>`).join("")}
       </select>
+      <div class="marker-custom-notes" hidden>
+        <label>Custom chord notes</label>
+        <div class="note-selector">
+          ${NOTES.map((note) => `
+            <label class="note-choice">
+              <input type="checkbox" name="customNotes" value="${note}" ${editor.project.customNotes.includes(note) ? "checked" : ""}>
+              <span>${note}</span>
+            </label>
+          `).join("")}
+        </div>
+      </div>
       <input name="duration" type="number" min="0" max="16" step="0.25" value="1">
       <button class="control-button full" type="button" data-action="preview-chord">Preview Chord</button>
       <button class="control-button full" type="submit">Add Marker</button>
@@ -259,6 +273,7 @@ function renderInspector(editor) {
         `).join("") || `<div class="readout">No markers</div>`}
       </div>
     </div>
+    ${marker ? renderMarkerEditor(editor, marker, suggested) : ""}
     ${marker ? renderMarkerDurations(editor, marker) : ""}
   `;
 
@@ -273,11 +288,13 @@ function renderInspector(editor) {
   editor.inspector.querySelector(".marker-form").addEventListener("submit", (event) => {
     event.preventDefault();
     const formData = new FormData(event.currentTarget);
+    const chord = parseChordChoice(String(formData.get("chordChoice")));
     addChordMarker(editor, {
       time: clamp(editor.playheadBeat, 0, TOTAL_BEATS),
-      key: String(formData.get("key")),
-      chordType: String(formData.get("chordType")),
+      key: chord.key,
+      chordType: chord.chordType,
       octave: Number(formData.get("octave")),
+      customNotes: formData.getAll("customNotes").map(String),
       defaultDuration: Number(formData.get("duration")) || 0,
     });
     editor.audio.update(editor.toneCurves);
@@ -288,9 +305,28 @@ function renderInspector(editor) {
   editor.inspector.querySelector('[data-action="preview-chord"]').addEventListener("click", (event) => {
     const form = event.currentTarget.closest("form");
     const formData = new FormData(form);
-    const targets = getChordTargets(String(formData.get("key")), String(formData.get("chordType")), 4, Number(formData.get("octave")));
+    const chord = parseChordChoice(String(formData.get("chordChoice")));
+    const targets = getChordTargets(chord.key, chord.chordType, 4, Number(formData.get("octave")), formData.getAll("customNotes").map(String));
     editor.audio.previewChord(targets.map((target) => target.frequency));
   });
+
+  const chordChoice = editor.inspector.querySelector('[name="chordChoice"]');
+  const markerCustomNotes = editor.inspector.querySelector(".marker-custom-notes");
+  const syncCustomNotes = () => {
+    markerCustomNotes.hidden = parseChordChoice(chordChoice.value).chordType !== "Custom";
+  };
+  chordChoice.addEventListener("change", syncCustomNotes);
+  syncCustomNotes();
+
+  const editChordChoice = editor.inspector.querySelector('[name="editChordChoice"]');
+  const editCustomNotes = editor.inspector.querySelector(".edit-marker-custom-notes");
+  if (editChordChoice && editCustomNotes) {
+    const syncEditCustomNotes = () => {
+      editCustomNotes.hidden = parseChordChoice(editChordChoice.value).chordType !== "Custom";
+    };
+    editChordChoice.addEventListener("change", syncEditCustomNotes);
+    syncEditCustomNotes();
+  }
 
   editor.inspector.querySelectorAll(".marker-row").forEach((button) => {
     button.addEventListener("click", () => {
@@ -298,6 +334,29 @@ function renderInspector(editor) {
       editor.renderSidebars();
       editor.draw();
     });
+  });
+
+  editor.inspector.querySelector(".edit-marker-form")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget);
+    const chord = parseChordChoice(String(formData.get("editChordChoice")));
+    updateChordMarker(editor, marker.id, {
+      key: chord.key,
+      chordType: chord.chordType,
+      octave: Number(formData.get("editOctave")),
+      customNotes: formData.getAll("editCustomNotes").map(String),
+    });
+    editor.audio.update(editor.toneCurves);
+    editor.renderSidebars();
+    editor.draw();
+  });
+
+  editor.inspector.querySelector('[data-action="preview-edit-chord"]')?.addEventListener("click", (event) => {
+    const form = event.currentTarget.closest("form");
+    const formData = new FormData(form);
+    const chord = parseChordChoice(String(formData.get("editChordChoice")));
+    const targets = getChordTargets(chord.key, chord.chordType, 4, Number(formData.get("editOctave")), formData.getAll("editCustomNotes").map(String));
+    editor.audio.previewChord(targets.map((target) => target.frequency));
   });
 
   editor.inspector.querySelectorAll("[data-duration-curve]").forEach((input) => {
@@ -317,7 +376,58 @@ const CHORD_TYPE_LABELS = {
   "major 7": true,
   "minor 7": true,
   "dominant 7": true,
+  Custom: true,
 };
+
+function renderChordChoices(editor, suggested) {
+  const choices = [];
+  NOTES.forEach((key) => {
+    Object.keys(CHORD_TYPE_LABELS).forEach((chordType) => {
+      const value = `${key}|${chordType}`;
+      const isSelected = key === editor.project.key && chordType === editor.project.chordType;
+      const label = chordType === "Custom" ? `${key} Custom` : `${key} ${chordType}`;
+      choices.push(`<option value="${value}" ${isSelected ? "selected" : ""}>${label}${suggested.has(value) ? " - Suggested" : ""}</option>`);
+    });
+  });
+  return choices.join("");
+}
+
+function parseChordChoice(value) {
+  const [key, chordType] = value.split("|");
+  return { key, chordType };
+}
+
+function renderMarkerEditor(editor, marker, suggested) {
+  const selectedValue = `${marker.key}|${marker.chordType}`;
+  return `
+    <form class="edit-marker-form inspector-section">
+      <label>Edit selected marker</label>
+      <select name="editChordChoice">
+        ${NOTES.flatMap((key) => Object.keys(CHORD_TYPE_LABELS).map((chordType) => {
+          const value = `${key}|${chordType}`;
+          const label = chordType === "Custom" ? `${key} Custom` : `${key} ${chordType}`;
+          return `<option value="${value}" ${value === selectedValue ? "selected" : ""}>${label}${suggested.has(value) ? " - Suggested" : ""}</option>`;
+        })).join("")}
+      </select>
+      <select name="editOctave">
+        ${OCTAVES.map((octave) => `<option value="${octave}" ${octave === marker.octave ? "selected" : ""}>Octave ${octave}</option>`).join("")}
+      </select>
+      <div class="edit-marker-custom-notes" hidden>
+        <label>Custom chord notes</label>
+        <div class="note-selector">
+          ${NOTES.map((note) => `
+            <label class="note-choice">
+              <input type="checkbox" name="editCustomNotes" value="${note}" ${(marker.customNotes || []).includes(note) ? "checked" : ""}>
+              <span>${note}</span>
+            </label>
+          `).join("")}
+        </div>
+      </div>
+      <button class="control-button full" type="button" data-action="preview-edit-chord">Preview Chord</button>
+      <button class="control-button full" type="submit">Apply Marker</button>
+    </form>
+  `;
+}
 
 function renderMarkerDurations(editor, marker) {
   return `

@@ -293,6 +293,36 @@ select {
   font-size: 0.9rem;
 }
 
+.note-selector {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.note-choice input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.note-choice span {
+  display: grid;
+  min-height: 32px;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  background: #0c1016;
+  color: #dce5f1;
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.note-choice input:checked + span {
+  border-color: #3aa7ff;
+  background: #1f3143;
+  color: #ffffff;
+}
+
 .canvas-wrap {
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto;

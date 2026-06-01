@@ -9,12 +9,14 @@ export function addChordMarker(editor, markerInput) {
     key: markerInput.key,
     chordType: markerInput.chordType,
     octave: markerInput.octave,
+    customNotes: markerInput.customNotes || [],
     transitionDurationPerCurve: Object.fromEntries(
-      editor.toneCurves.map((curve) => [curve.id, markerInput.defaultDuration]),
+      editor.toneCurves.map((curve) => [curve.id, markerInput.durationPerCurve?.[curve.id] ?? markerInput.defaultDuration]),
     ),
   };
 
   applyMarkerToCurves(editor, marker);
+  applyMarkerTransitionTypes(editor, marker, markerInput.transitionTypes || []);
   editor.chordMarkers.push(marker);
   editor.chordMarkers.sort((a, b) => a.time - b.time);
   editor.selectedMarkerId = marker.id;
@@ -30,6 +32,20 @@ export function setMarkerCurveDuration(editor, markerId, curveId, duration) {
 
   marker.transitionDurationPerCurve[curveId] = duration;
   applyMarkerToCurves(editor, marker, curveId);
+}
+
+export function updateChordMarker(editor, markerId, values) {
+  const marker = editor.chordMarkers.find((item) => item.id === markerId);
+
+  if (!marker) {
+    return;
+  }
+
+  marker.key = values.key;
+  marker.chordType = values.chordType;
+  marker.octave = values.octave;
+  marker.customNotes = values.customNotes || [];
+  applyMarkerToCurves(editor, marker);
 }
 
 export function setSegmentTransition(curve, segmentId, transitionType) {
@@ -66,7 +82,7 @@ function applyMarkerToCurves(editor, marker, onlyCurveId = null) {
   const curves = onlyCurveId
     ? editor.toneCurves.filter((curve) => curve.id === onlyCurveId)
     : editor.toneCurves;
-  const targets = getChordTargets(marker.key, marker.chordType, editor.toneCurves.length, marker.octave);
+  const targets = getChordTargets(marker.key, marker.chordType, editor.toneCurves.length, marker.octave, marker.customNotes);
 
   curves.forEach((curve) => {
     const curveIndex = editor.toneCurves.findIndex((item) => item.id === curve.id);
@@ -83,6 +99,17 @@ function applyMarkerToCurves(editor, marker, onlyCurveId = null) {
 
     upsertMarkerNode(curve, marker.id, "target", pointFromMidi(marker.time, target.midi));
     sortCurve(curve);
+  });
+}
+
+function applyMarkerTransitionTypes(editor, marker, transitionTypes) {
+  editor.toneCurves.forEach((curve, index) => {
+    const target = curve.points.find((point) => point.markerId === marker.id && point.markerRole === "target");
+    const segment = target ? curve.segments.find((item) => item.toId === target.id) : null;
+
+    if (segment) {
+      segment.transitionType = transitionTypes[index % transitionTypes.length] || marker.transitionType || "linear";
+    }
   });
 }
 
