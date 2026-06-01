@@ -70,6 +70,10 @@ export function createProjectScreen(root, { onCreate }) {
             </select>
           </div>
           <div class="field">
+            <label for="project-bpm">BPM</label>
+            <input id="project-bpm" name="bpm" type="number" min="40" max="240" step="1" value="120">
+          </div>
+          <div class="field">
             <label for="pattern-template">Pattern Template</label>
             <select id="pattern-template" name="patternTemplate">
               ${PATTERN_TEMPLATES.map((template) => `<option value="${template}">${template}</option>`).join("")}
@@ -100,8 +104,14 @@ export function createProjectScreen(root, { onCreate }) {
       chordType: String(formData.get("chordType")),
       pitchLineCount: Number(formData.get("pitchLineCount")),
       octave: Number(formData.get("octave")),
+      bpm: clampBpm(formData.get("bpm")),
       customNotes: formData.getAll("customNotes").map(String),
       patternTemplate: String(formData.get("patternTemplate")),
     });
   });
+}
+
+function clampBpm(value) {
+  const bpm = Number(value);
+  return Number.isFinite(bpm) ? Math.min(Math.max(Math.round(bpm), 40), 240) : 120;
 }

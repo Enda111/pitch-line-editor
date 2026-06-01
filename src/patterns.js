@@ -48,7 +48,7 @@ export function applyPatternTemplate(editor) {
   if (editor.project.patternTemplate === "Simple sustained chord") {
     const durations = Object.fromEntries(editor.toneCurves.map((curve) => [curve.id, 0]));
     addChordMarker(editor, {
-      time: 12,
+      beat: 12,
       key: editor.project.key,
       chordType: editor.project.chordType,
       octave: editor.project.octave,
@@ -60,16 +60,16 @@ export function applyPatternTemplate(editor) {
     return;
   }
 
-  let time = 0;
+  let beat = 0;
   template.degrees.forEach((degree, index) => {
-    time += template.lengths[index] || 4;
+    beat += template.lengths[index] || 4;
     const chord = chordFromDegree(editor.project.key, degree, editor.project.chordType);
     const durations = Object.fromEntries(
       editor.toneCurves.map((curve, curveIndex) => [curve.id, 0.75 + ((curveIndex + index) % 3) * 0.5]),
     );
 
     addChordMarker(editor, {
-      time,
+      beat,
       key: chord.key,
       chordType: chord.chordType,
       octave: editor.project.octave,

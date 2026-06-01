@@ -64,7 +64,7 @@ function hitMarker(editor, event) {
   }
 
   return editor.chordMarkers.find((marker) => {
-    const x = editor.beatToX(marker.time, grid);
+    const x = editor.beatToX(marker.beat, grid);
     return pos.x >= x && pos.x <= x + 116;
   }) || null;
 }
@@ -102,8 +102,8 @@ function setPlayheadFromEvent(editor, event) {
   const pos = eventToCanvasPosition(editor, event);
   const beat = clamp(editor.scrollBeat + (pos.x - grid.x) / editor.pixelsPerBeat, 0, TOTAL_BEATS);
 
-  editor.playheadBeat = beat;
-  editor.audio.setPosition(beat);
+  editor.playheadBeat = editor.snapPlayhead ? editor.snapBeat(beat) : beat;
+  editor.audio.setPosition(editor.playheadBeat);
   editor.renderSidebars();
   editor.draw();
 }
@@ -142,7 +142,7 @@ function dragSelectedNode(editor, event) {
     return;
   }
 
-  point.beat = editor.snapTime(position.beat);
+  point.beat = editor.snapBeat(position.beat);
   point.row = position.row;
   point.midi = position.midi;
   point.frequency = position.frequency;
@@ -163,7 +163,7 @@ function addNodeAtEvent(editor, event) {
     return;
   }
 
-  curve.points.push(pointFromRow(editor.snapTime(position.beat), position.row));
+  curve.points.push(pointFromRow(editor.snapBeat(position.beat), position.row));
   sortCurve(curve);
   editor.selectedSegmentId = null;
   editor.audio.update(editor.toneCurves);

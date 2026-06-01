@@ -5,6 +5,7 @@ import {
   NOTES,
   TOTAL_BEATS,
   SEMITONE_ROWS,
+  SNAP_GRIDS,
   TRANSITION_TYPES,
   clamp,
   getChordTargets,
@@ -13,6 +14,7 @@ import {
   midiToName,
   pointFromRow,
   rowToMidi,
+  validateBpm,
 } from "./music.js";
 
 const DEFAULT_PIXELS_PER_BEAT = 56;
@@ -28,9 +30,10 @@ export function createEditor(root, project, audio) {
   }
 
   project.octave = project.octave || 4;
+  project.bpm = validateBpm(project.bpm);
   project.customNotes = project.customNotes?.length ? project.customNotes : ["C", "E", "G"];
-  project.snapTimeEnabled = project.snapTimeEnabled ?? true;
-  project.snapTimeStepSeconds = validateSnapTimeStep(project.snapTimeStepSeconds);
+  project.snapGrid = project.snapGrid || "Sixteenth note";
+  project.snapPlayhead = project.snapPlayhead ?? true;
 
   root.innerHTML = `
     <section class="editor-screen" aria-label="Pitch line editor">
@@ -42,6 +45,7 @@ export function createEditor(root, project, audio) {
         <div class="transport-controls" aria-label="Playback controls">
           <button class="control-button" type="button" data-action="play">Play</button>
           <button class="control-button" type="button" data-action="stop">Stop</button>
+          <label class="toolbar-field">BPM <input name="bpm" type="number" min="40" max="240" step="1" value="${project.bpm}"></label>
           <button class="control-button square" type="button" data-action="zoom-out" aria-label="Zoom out">-</button>
           <button class="control-button square" type="button" data-action="zoom-in" aria-label="Zoom in">+</button>
         </div>
@@ -70,8 +74,8 @@ export function createEditor(root, project, audio) {
     selectedCurveId: "curve-1",
     selectedSegmentId: null,
     selectedMarkerId: null,
-    snapTimeEnabled: project.snapTimeEnabled,
-    snapTimeStepSeconds: project.snapTimeStepSeconds,
+    snapGrid: project.snapGrid,
+    snapPlayhead: project.snapPlayhead,
     pixelsPerBeat: DEFAULT_PIXELS_PER_BEAT,
     verticalScrollRow: Math.max(0, Math.min(...guideRows) - 6),
     scrollBeat: 0,
@@ -87,6 +91,7 @@ export function createEditor(root, project, audio) {
   };
 
   Object.assign(editor, createEditorApi(editor));
+  audio.setBpm(project.bpm);
   bindControls(root, editor);
   attachEditorInteraction(editor);
 
@@ -177,13 +182,14 @@ function createEditorApi(editor) {
     rowFromY(y, grid) {
       return clamp(Math.round((y - grid.y) / PIXELS_PER_SEMITONE + editor.verticalScrollRow - 0.5), 0, SEMITONE_ROWS - 1);
     },
-    snapTime(time) {
-      if (!editor.snapTimeEnabled) {
-        return time;
+    snapBeat(beat) {
+      const step = SNAP_GRIDS[editor.snapGrid];
+
+      if (!step) {
+        return beat;
       }
 
-      const step = validateSnapTimeStep(editor.snapTimeStepSeconds);
-      return Math.round(time / step) * step;
+      return Math.round(beat / step) * step;
     },
     rowToMidi,
     midiToFrequency,
@@ -202,6 +208,12 @@ function bindControls(root, editor) {
   root.querySelector('[data-action="stop"]').addEventListener("click", () => stopPlayback(editor));
   root.querySelector('[data-action="zoom-in"]').addEventListener("click", () => zoomTimeline(editor, 1));
   root.querySelector('[data-action="zoom-out"]').addEventListener("click", () => zoomTimeline(editor, -1));
+  root.querySelector('[name="bpm"]').addEventListener("change", (event) => {
+    const bpm = validateBpm(event.target.value);
+    editor.project.bpm = bpm;
+    editor.audio.setBpm(bpm);
+    event.target.value = String(bpm);
+  });
   editor.scrollbar.addEventListener("input", () => {
     editor.scrollBeat = Number(editor.scrollbar.value);
     editor.draw();
@@ -236,7 +248,7 @@ function renderInspector(editor) {
   const curve = editor.selectedCurve();
   const segment = editor.selectedSegment();
   const marker = editor.chordMarkers.find((item) => item.id === editor.selectedMarkerId);
-  const previousChord = editor.chordMarkers.filter((item) => item.time <= editor.playheadBeat).at(-1) || editor.project;
+  const previousChord = editor.chordMarkers.filter((item) => item.beat <= editor.playheadBeat).at(-1) || editor.project;
   const suggested = getSuggestedChordChoices(previousChord, editor.project);
 
   editor.inspector.innerHTML = `
@@ -246,12 +258,14 @@ function renderInspector(editor) {
       <div class="readout">${curve?.name || "None"}</div>
     </div>
     <div class="inspector-section snap-section">
+      <label for="snap-grid">Snap Grid</label>
+      <select id="snap-grid" name="snapGrid">
+        ${Object.keys(SNAP_GRIDS).map((grid) => `<option value="${grid}" ${grid === editor.snapGrid ? "selected" : ""}>${grid}</option>`).join("")}
+      </select>
       <label class="checkbox-row">
-        <input type="checkbox" name="snapTimeEnabled" ${editor.snapTimeEnabled ? "checked" : ""}>
-        <span>Snap Time</span>
+        <input type="checkbox" name="snapPlayhead" ${editor.snapPlayhead ? "checked" : ""}>
+        <span>Snap Playhead</span>
       </label>
-      <label for="snap-time-step">Snap Step Seconds</label>
-      <input id="snap-time-step" name="snapTimeStepSeconds" type="number" min="0.01" step="0.01" value="${editor.snapTimeStepSeconds}">
     </div>
     <div class="inspector-section">
       <label for="segment-transition">Selected segment</label>
@@ -261,7 +275,7 @@ function renderInspector(editor) {
     </div>
     <form class="marker-form inspector-section">
       <label>Add chord marker</label>
-      <div class="readout">Marker time: ${roundBeat(editor.playheadBeat)}</div>
+      <div class="readout">Marker beat: ${roundBeat(editor.playheadBeat)}</div>
       <select name="chordChoice">
         ${renderChordChoices(editor, suggested)}
       </select>
@@ -279,7 +293,8 @@ function renderInspector(editor) {
           `).join("")}
         </div>
       </div>
-      <input name="duration" type="number" min="0" max="16" step="0.25" value="1">
+      <label for="marker-duration">Transition duration (beats)</label>
+      <input id="marker-duration" name="duration" type="number" min="0" max="16" step="0.25" value="1">
       <button class="control-button full" type="button" data-action="preview-chord">Preview Chord</button>
       <button class="control-button full" type="submit">Add Marker</button>
     </form>
@@ -288,7 +303,7 @@ function renderInspector(editor) {
       <div class="marker-list">
         ${editor.chordMarkers.map((item) => `
           <button class="marker-row ${item.id === editor.selectedMarkerId ? "selected" : ""}" type="button" data-marker-id="${item.id}">
-            ${item.key}${item.octave} ${item.chordType} @ ${roundBeat(item.time)}
+            ${item.key}${item.octave} ${item.chordType} @ beat ${roundBeat(item.beat)}
           </button>
         `).join("") || `<div class="readout">No markers</div>`}
       </div>
@@ -305,16 +320,14 @@ function renderInspector(editor) {
     }
   });
 
-  editor.inspector.querySelector('[name="snapTimeEnabled"]').addEventListener("change", (event) => {
-    editor.snapTimeEnabled = event.target.checked;
-    editor.project.snapTimeEnabled = editor.snapTimeEnabled;
+  editor.inspector.querySelector('[name="snapGrid"]').addEventListener("change", (event) => {
+    editor.snapGrid = event.target.value;
+    editor.project.snapGrid = editor.snapGrid;
   });
 
-  editor.inspector.querySelector('[name="snapTimeStepSeconds"]').addEventListener("change", (event) => {
-    const step = validateSnapTimeStep(Number(event.target.value));
-    editor.snapTimeStepSeconds = step;
-    editor.project.snapTimeStepSeconds = step;
-    event.target.value = String(step);
+  editor.inspector.querySelector('[name="snapPlayhead"]').addEventListener("change", (event) => {
+    editor.snapPlayhead = event.target.checked;
+    editor.project.snapPlayhead = editor.snapPlayhead;
   });
 
   editor.inspector.querySelector(".marker-form").addEventListener("submit", (event) => {
@@ -322,7 +335,7 @@ function renderInspector(editor) {
     const formData = new FormData(event.currentTarget);
     const chord = parseChordChoice(String(formData.get("chordChoice")));
     addChordMarker(editor, {
-      time: clamp(editor.playheadBeat, 0, TOTAL_BEATS),
+      beat: clamp(editor.playheadBeat, 0, TOTAL_BEATS),
       key: chord.key,
       chordType: chord.chordType,
       octave: Number(formData.get("octave")),
@@ -464,7 +477,7 @@ function renderMarkerEditor(editor, marker, suggested) {
 function renderMarkerDurations(editor, marker) {
   return `
     <div class="inspector-section">
-      <label>Transition duration per curve</label>
+      <label>Transition duration per curve (beats)</label>
       ${editor.toneCurves.map((curve) => `
         <div class="duration-row">
           <span>${curve.name}</span>
@@ -563,7 +576,7 @@ function drawMarkerLane(context, grid, editor) {
   context.fillRect(grid.x, grid.markerY, grid.width, grid.markerHeight);
 
   editor.chordMarkers.forEach((marker) => {
-    const x = editor.beatToX(marker.time, grid);
+    const x = editor.beatToX(marker.beat, grid);
 
     if (x < grid.x - 90 || x > grid.x + grid.width) {
       return;
@@ -605,6 +618,14 @@ function drawGrid(context, grid, rowHeight, editor) {
     context.moveTo(px, grid.y);
     context.lineTo(px, grid.y + grid.height);
     context.stroke();
+
+    if (beat % 4 === 0) {
+      context.fillStyle = "#7f8da3";
+      context.font = "11px system-ui, sans-serif";
+      context.textAlign = "center";
+      context.textBaseline = "top";
+      context.fillText(`M${beat / 4 + 1}`, px, grid.markerY + grid.markerHeight + 2);
+    }
   }
 
   context.restore();
@@ -757,11 +778,6 @@ function drawLabels(context, grid, rowHeight, editor) {
 
 function roundBeat(value) {
   return Math.round(value * 100) / 100;
-}
-
-function validateSnapTimeStep(value) {
-  const numericValue = Number(value);
-  return Number.isFinite(numericValue) && numericValue > 0 ? numericValue : 0.25;
 }
 
 function lineColor(index) {

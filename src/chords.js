@@ -5,7 +5,7 @@ const SAME_TIME_EPSILON = 0.001;
 export function addChordMarker(editor, markerInput) {
   const marker = {
     id: createId("marker"),
-    time: markerInput.time,
+    beat: markerInput.beat,
     key: markerInput.key,
     chordType: markerInput.chordType,
     octave: markerInput.octave,
@@ -18,7 +18,7 @@ export function addChordMarker(editor, markerInput) {
   applyMarkerToCurves(editor, marker);
   applyMarkerTransitionTypes(editor, marker, markerInput.transitionTypes || []);
   editor.chordMarkers.push(marker);
-  editor.chordMarkers.sort((a, b) => a.time - b.time);
+  editor.chordMarkers.sort((a, b) => a.beat - b.beat);
   editor.selectedMarkerId = marker.id;
   return marker;
 }
@@ -88,16 +88,16 @@ function applyMarkerToCurves(editor, marker, onlyCurveId = null) {
     const curveIndex = editor.toneCurves.findIndex((item) => item.id === curve.id);
     const target = targets[curveIndex];
     const duration = Math.max(0, marker.transitionDurationPerCurve[curve.id] || 0);
-    const transitionStart = Math.max(0, marker.time - duration);
+    const transitionStart = Math.max(0, marker.beat - duration);
     const previousPitch = pitchAtBeat(curve, transitionStart, marker.id);
 
     removeMarkerStartNode(curve, marker.id);
 
-    if (duration > 0 && transitionStart < marker.time) {
+    if (duration > 0 && transitionStart < marker.beat) {
       upsertMarkerNode(curve, marker.id, "transition-start", pointFromMidi(transitionStart, previousPitch.midi));
     }
 
-    upsertMarkerNode(curve, marker.id, "target", pointFromMidi(marker.time, target.midi));
+    upsertMarkerNode(curve, marker.id, "target", pointFromMidi(marker.beat, target.midi));
     sortCurve(curve);
   });
 }

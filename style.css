@@ -176,6 +176,26 @@ select {
   font-size: 1.2rem;
 }
 
+.toolbar-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 38px;
+  color: #aeb8c7;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.toolbar-field input {
+  width: 74px;
+  min-height: 38px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  background: #0c1016;
+  color: #f3f7fb;
+  padding: 7px 9px;
+}
+
 .control-button.full {
   width: 100%;
 }

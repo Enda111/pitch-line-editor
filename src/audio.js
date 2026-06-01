@@ -1,4 +1,4 @@
-const DEFAULT_BPM = 100;
+const DEFAULT_BPM = 120;
 
 export function createAudioEngine() {
   const engine = {
@@ -22,6 +22,13 @@ export function createAudioEngine() {
       }
 
       return window.Tone.Transport.ticks / window.Tone.Transport.PPQ;
+    },
+    setBpm(bpm) {
+      engine.bpm = bpm;
+
+      if (window.Tone) {
+        window.Tone.Transport.bpm.value = bpm;
+      }
     },
     async toggle(lines, startBeat = engine.pausedBeat) {
       if (engine.isPlaying) {

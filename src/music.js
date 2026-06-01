@@ -12,6 +12,31 @@ export const TRANSITION_TYPES = [
   "custom bezier placeholder",
 ];
 
+export const SNAP_GRIDS = {
+  "Whole note": 4,
+  "Half note": 2,
+  "Quarter note": 1,
+  "Eighth note": 0.5,
+  "Sixteenth note": 0.25,
+  "Thirty-second note": 0.125,
+  "Triplet quarter": 1 / 3,
+  "Triplet eighth": 1 / 6,
+  Off: null,
+};
+
+export function beatsToSeconds(beats, bpm) {
+  return beats * 60 / bpm;
+}
+
+export function secondsToBeats(seconds, bpm) {
+  return seconds / 60 * bpm;
+}
+
+export function validateBpm(value) {
+  const bpm = Number(value);
+  return Number.isFinite(bpm) ? clamp(Math.round(bpm), 40, 240) : 120;
+}
+
 export const CHORD_INTERVALS = {
   major: [0, 4, 7],
   minor: [0, 3, 7],
