@@ -176,6 +176,123 @@ select {
   font-size: 1.2rem;
 }
 
+.control-button.full {
+  width: 100%;
+}
+
+.editor-workspace {
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr) 260px;
+  min-height: 0;
+}
+
+.curve-sidebar,
+.inspector-panel {
+  min-height: 0;
+  border-color: rgba(255, 255, 255, 0.1);
+  background: #11161e;
+  padding: 14px;
+}
+
+.curve-sidebar {
+  border-right: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.inspector-panel {
+  border-left: 1px solid rgba(255, 255, 255, 0.1);
+  overflow: auto;
+}
+
+.panel-title {
+  margin-bottom: 12px;
+  color: #eef2f7;
+  font-size: 0.82rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.curve-list,
+.marker-list {
+  display: grid;
+  gap: 8px;
+}
+
+.curve-row,
+.marker-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  background: #171d27;
+  color: #dce5f1;
+  cursor: pointer;
+  padding: 8px 10px;
+  text-align: left;
+}
+
+.curve-row.selected,
+.marker-row.selected {
+  border-color: #3aa7ff;
+  background: #1f3143;
+  color: #ffffff;
+}
+
+.curve-swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+
+.inspector-section {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 18px;
+}
+
+.inspector-section label {
+  color: #aeb8c7;
+  font-size: 0.8rem;
+  font-weight: 800;
+}
+
+.inspector-section input,
+.inspector-section select {
+  width: 100%;
+  min-height: 36px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  background: #0c1016;
+  color: #f3f7fb;
+  padding: 7px 9px;
+}
+
+.readout {
+  min-height: 34px;
+  border-radius: 6px;
+  background: #0c1016;
+  color: #dce5f1;
+  padding: 7px 9px;
+}
+
+.inline-grid {
+  display: grid;
+  grid-template-columns: 0.8fr 1.2fr;
+  gap: 8px;
+}
+
+.duration-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 84px;
+  align-items: center;
+  gap: 8px;
+  color: #dce5f1;
+  font-size: 0.9rem;
+}
+
 .canvas-wrap {
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto;
@@ -217,6 +334,16 @@ select {
   .editor-bar {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .editor-workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .curve-sidebar,
+  .inspector-panel {
+    border: 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
   }
 
   .canvas-wrap {

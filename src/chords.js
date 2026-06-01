@@ -1,0 +1,138 @@
+import { createId, getChordTargets, midiToFrequency, pointFromMidi, TRANSITION_TYPES } from "./music.js";
+
+const SAME_TIME_EPSILON = 0.001;
+
+export function addChordMarker(editor, markerInput) {
+  const marker = {
+    id: createId("marker"),
+    time: markerInput.time,
+    key: markerInput.key,
+    chordType: markerInput.chordType,
+    transitionDurationPerCurve: Object.fromEntries(
+      editor.toneCurves.map((curve) => [curve.id, markerInput.defaultDuration]),
+    ),
+  };
+
+  applyMarkerToCurves(editor, marker);
+  editor.chordMarkers.push(marker);
+  editor.chordMarkers.sort((a, b) => a.time - b.time);
+  editor.selectedMarkerId = marker.id;
+  return marker;
+}
+
+export function setMarkerCurveDuration(editor, markerId, curveId, duration) {
+  const marker = editor.chordMarkers.find((item) => item.id === markerId);
+
+  if (!marker) {
+    return;
+  }
+
+  marker.transitionDurationPerCurve[curveId] = duration;
+  applyMarkerToCurves(editor, marker, curveId);
+}
+
+export function setSegmentTransition(curve, segmentId, transitionType) {
+  if (!TRANSITION_TYPES.includes(transitionType)) {
+    return;
+  }
+
+  const segment = curve.segments.find((item) => item.id === segmentId);
+
+  if (segment) {
+    segment.transitionType = transitionType;
+  }
+}
+
+export function sortCurve(curve) {
+  const previousTypes = new Map(curve.segments.map((segment) => [`${segment.fromId}:${segment.toId}`, segment.transitionType]));
+  curve.points.sort((a, b) => a.beat - b.beat);
+  curve.segments = [];
+
+  for (let index = 0; index < curve.points.length - 1; index += 1) {
+    const from = curve.points[index];
+    const to = curve.points[index + 1];
+    const key = `${from.id}:${to.id}`;
+    curve.segments.push({
+      id: `${from.id}-${to.id}`,
+      fromId: from.id,
+      toId: to.id,
+      transitionType: previousTypes.get(key) || "linear",
+    });
+  }
+}
+
+function applyMarkerToCurves(editor, marker, onlyCurveId = null) {
+  const curves = onlyCurveId
+    ? editor.toneCurves.filter((curve) => curve.id === onlyCurveId)
+    : editor.toneCurves;
+  const targets = getChordTargets(marker.key, marker.chordType, editor.toneCurves.length);
+
+  curves.forEach((curve) => {
+    const curveIndex = editor.toneCurves.findIndex((item) => item.id === curve.id);
+    const target = targets[curveIndex];
+    const duration = Math.max(0, marker.transitionDurationPerCurve[curve.id] || 0);
+    const transitionStart = Math.max(0, marker.time - duration);
+    const previousPitch = pitchAtBeat(curve, transitionStart, marker.id);
+
+    removeMarkerStartNode(curve, marker.id);
+
+    if (duration > 0 && transitionStart < marker.time) {
+      upsertMarkerNode(curve, marker.id, "transition-start", pointFromMidi(transitionStart, previousPitch.midi));
+    }
+
+    upsertMarkerNode(curve, marker.id, "target", pointFromMidi(marker.time, target.midi));
+    sortCurve(curve);
+  });
+}
+
+function upsertMarkerNode(curve, markerId, role, nextPoint) {
+  const existing = curve.points.find((point) => Math.abs(point.beat - nextPoint.beat) < SAME_TIME_EPSILON);
+
+  if (existing) {
+    existing.beat = nextPoint.beat;
+    existing.row = nextPoint.row;
+    existing.midi = nextPoint.midi;
+    existing.frequency = nextPoint.frequency;
+    existing.markerId = markerId;
+    existing.markerRole = role;
+    return existing;
+  }
+
+  curve.points.push({
+    ...nextPoint,
+    markerId,
+    markerRole: role,
+  });
+  return nextPoint;
+}
+
+function removeMarkerStartNode(curve, markerId) {
+  curve.points = curve.points.filter((point) => !(point.markerId === markerId && point.markerRole === "transition-start"));
+}
+
+function pitchAtBeat(curve, beat, ignoredMarkerId) {
+  const points = curve.points
+    .filter((point) => point.markerId !== ignoredMarkerId)
+    .sort((a, b) => a.beat - b.beat);
+
+  if (points.length === 1 || beat <= points[0].beat) {
+    return points[0];
+  }
+
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const current = points[index];
+    const next = points[index + 1];
+
+    if (beat >= current.beat && beat <= next.beat) {
+      const progress = (beat - current.beat) / (next.beat - current.beat);
+      const frequency = current.frequency + (next.frequency - current.frequency) * progress;
+      const midi = Math.round(69 + 12 * Math.log2(frequency / 440));
+      return {
+        midi,
+        frequency: midiToFrequency(midi),
+      };
+    }
+  }
+
+  return points[points.length - 1];
+}

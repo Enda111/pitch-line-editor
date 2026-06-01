@@ -1,20 +1,23 @@
-const NOTES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
-const TOTAL_BEATS = 64;
-const SEMITONE_ROWS = 24;
-const BASE_MIDI = 60;
+import { addChordMarker, setMarkerCurveDuration, setSegmentTransition, sortCurve } from "./chords.js";
+import { attachEditorInteraction } from "./interaction.js";
+import {
+  NOTES,
+  TOTAL_BEATS,
+  SEMITONE_ROWS,
+  TRANSITION_TYPES,
+  clamp,
+  getChordTargets,
+  getChordRows,
+  midiToFrequency,
+  midiToName,
+  pointFromRow,
+  rowToMidi,
+} from "./music.js";
+
 const DEFAULT_PIXELS_PER_BEAT = 56;
 const MIN_PIXELS_PER_BEAT = 28;
 const MAX_PIXELS_PER_BEAT = 160;
-
-const CHORD_INTERVALS = {
-  major: [0, 4, 7],
-  minor: [0, 3, 7],
-  diminished: [0, 3, 6],
-  augmented: [0, 4, 8],
-  "major 7": [0, 4, 7, 11],
-  "minor 7": [0, 3, 7, 10],
-  "dominant 7": [0, 4, 7, 10],
-};
+const MARKER_LANE_HEIGHT = 34;
 
 export function createEditor(root, project, audio) {
   if (!root) {
@@ -26,7 +29,7 @@ export function createEditor(root, project, audio) {
       <header class="editor-bar">
         <div class="project-meta">
           <h1>${escapeHtml(project.name)}</h1>
-          <p>${project.key} ${project.chordType} - ${project.pitchLineCount} pitch lines</p>
+          <p>${project.key} ${project.chordType} - ${project.pitchLineCount} curves</p>
         </div>
         <div class="transport-controls" aria-label="Playback controls">
           <button class="control-button" type="button" data-action="play">Play</button>
@@ -35,60 +38,50 @@ export function createEditor(root, project, audio) {
           <button class="control-button square" type="button" data-action="zoom-in" aria-label="Zoom in">+</button>
         </div>
       </header>
-      <div class="canvas-wrap">
-        <canvas class="editor-canvas" aria-label="Piano roll pitch line canvas"></canvas>
-        <input class="timeline-scrollbar" type="range" min="0" max="0" value="0" aria-label="Horizontal timeline scroll">
+      <div class="editor-workspace">
+        <aside class="curve-sidebar" aria-label="Tone curves"></aside>
+        <div class="canvas-wrap">
+          <canvas class="editor-canvas" aria-label="Piano roll pitch line canvas"></canvas>
+          <input class="timeline-scrollbar" type="range" min="0" max="0" value="0" aria-label="Horizontal timeline scroll">
+        </div>
+        <aside class="inspector-panel" aria-label="Curve inspector"></aside>
       </div>
     </section>
   `;
 
   const canvas = root.querySelector("canvas");
-  const playButton = root.querySelector('[data-action="play"]');
-  const stopButton = root.querySelector('[data-action="stop"]');
-  const zoomInButton = root.querySelector('[data-action="zoom-in"]');
-  const zoomOutButton = root.querySelector('[data-action="zoom-out"]');
-  const scrollbar = root.querySelector(".timeline-scrollbar");
-  const chordRows = getChordRows(project.key, project.chordType);
+  const guideRows = getChordRows(project.key, project.chordType, project.pitchLineCount);
   const editor = {
     canvas,
     context: canvas.getContext("2d"),
     project,
     audio,
-    pitchLines: createStarterPitchLines(project.pitchLineCount, chordRows),
-    chordRows,
+    toneCurves: createStarterToneCurves(project.pitchLineCount, guideRows),
+    guideRows,
+    chordMarkers: [],
+    selectedCurveId: "curve-1",
+    selectedSegmentId: null,
+    selectedMarkerId: null,
     pixelsPerBeat: DEFAULT_PIXELS_PER_BEAT,
     scrollBeat: 0,
     playheadBeat: 0,
-    isDragging: false,
-    didDrag: false,
+    dragMode: null,
+    dragPointId: null,
     dragStartX: 0,
-    dragStartY: 0,
     dragStartScrollBeat: 0,
-    animationFrame: null,
-    scrollbar,
-    playButton,
+    playButton: root.querySelector('[data-action="play"]'),
+    scrollbar: root.querySelector(".timeline-scrollbar"),
+    curveSidebar: root.querySelector(".curve-sidebar"),
+    inspector: root.querySelector(".inspector-panel"),
   };
 
-  const draw = () => drawEditor(editor);
-  const resizeObserver = new ResizeObserver(draw);
+  Object.assign(editor, createEditorApi(editor));
+  bindControls(root, editor);
+  attachEditorInteraction(editor);
+
+  const resizeObserver = new ResizeObserver(() => editor.draw());
   resizeObserver.observe(canvas);
-  window.addEventListener("resize", draw);
-
-  playButton.addEventListener("click", () => togglePlayback(editor));
-  stopButton.addEventListener("click", () => stopPlayback(editor));
-  zoomInButton.addEventListener("click", () => zoomTimeline(editor, 1));
-  zoomOutButton.addEventListener("click", () => zoomTimeline(editor, -1));
-  scrollbar.addEventListener("input", () => {
-    editor.scrollBeat = Number(scrollbar.value);
-    drawEditor(editor);
-  });
-
-  canvas.addEventListener("pointerdown", (event) => beginPan(editor, event));
-  canvas.addEventListener("pointermove", (event) => panTimeline(editor, event));
-  canvas.addEventListener("pointerup", (event) => endPan(editor, event));
-  canvas.addEventListener("pointerleave", (event) => endPan(editor, event));
-  canvas.addEventListener("wheel", (event) => wheelScroll(editor, event), { passive: false });
-
+  window.addEventListener("resize", () => editor.draw());
   window.onkeydown = (event) => {
     if (event.code !== "Space" || isTypingTarget(event.target)) {
       return;
@@ -98,31 +91,233 @@ export function createEditor(root, project, audio) {
     togglePlayback(editor);
   };
 
-  draw();
+  editor.renderSidebars();
+  editor.draw();
   animate(editor);
 }
 
-function createStarterPitchLines(count, chordRows) {
+function createStarterToneCurves(count, guideRows) {
   return Array.from({ length: count }, (_, index) => {
-    const row = chordRows[index % chordRows.length];
-    const midi = rowToMidi(row);
-    return {
-      id: `pitch-line-${index + 1}`,
+    const row = guideRows[index];
+    const curve = {
+      id: `curve-${index + 1}`,
+      name: `Curve ${index + 1}`,
       color: lineColor(index),
-      points: [
-        {
-          beat: 0,
-          row,
-          midi,
-          frequency: midiToFrequency(midi),
-        },
-      ],
+      points: [pointFromRow(0, row)],
+      segments: [],
     };
+    sortCurve(curve);
+    return curve;
   });
 }
 
+function createEditorApi(editor) {
+  return {
+    selectedCurve() {
+      return editor.toneCurves.find((curve) => curve.id === editor.selectedCurveId);
+    },
+    selectedSegment() {
+      const curve = this.selectedCurve();
+      return curve?.segments.find((segment) => segment.id === editor.selectedSegmentId) || null;
+    },
+    getGridMetrics(width, height) {
+      const canvasRect = editor.canvas.getBoundingClientRect();
+      const canvasWidth = width || canvasRect.width;
+      const canvasHeight = height || canvasRect.height;
+      const labelWidth = 76;
+      const topPad = 24 + MARKER_LANE_HEIGHT;
+      const bottomPad = 24;
+
+      return {
+        x: labelWidth,
+        y: topPad,
+        width: Math.max(180, canvasWidth - labelWidth - 20),
+        height: Math.max(260, canvasHeight - topPad - bottomPad),
+        markerY: 16,
+        markerHeight: MARKER_LANE_HEIGHT - 8,
+      };
+    },
+    visibleBeats() {
+      return this.getGridMetrics().width / editor.pixelsPerBeat;
+    },
+    maxScrollBeat() {
+      return Math.max(0, TOTAL_BEATS - this.visibleBeats());
+    },
+    updateScrollbar() {
+      const max = this.maxScrollBeat();
+      editor.scrollbar.max = String(max);
+      editor.scrollbar.step = "0.01";
+      editor.scrollbar.value = String(clamp(editor.scrollBeat, 0, max));
+    },
+    beatToX(beat, grid) {
+      return grid.x + (beat - editor.scrollBeat) * editor.pixelsPerBeat;
+    },
+    rowToY(row, grid, rowHeight) {
+      return grid.y + row * rowHeight + rowHeight / 2;
+    },
+    rowToMidi,
+    midiToFrequency,
+    draw() {
+      drawEditor(editor);
+    },
+    renderSidebars() {
+      renderCurveSidebar(editor);
+      renderInspector(editor);
+    },
+  };
+}
+
+function bindControls(root, editor) {
+  root.querySelector('[data-action="play"]').addEventListener("click", () => togglePlayback(editor));
+  root.querySelector('[data-action="stop"]').addEventListener("click", () => stopPlayback(editor));
+  root.querySelector('[data-action="zoom-in"]').addEventListener("click", () => zoomTimeline(editor, 1));
+  root.querySelector('[data-action="zoom-out"]').addEventListener("click", () => zoomTimeline(editor, -1));
+  editor.scrollbar.addEventListener("input", () => {
+    editor.scrollBeat = Number(editor.scrollbar.value);
+    editor.draw();
+  });
+}
+
+function renderCurveSidebar(editor) {
+  const visualCurves = [...editor.toneCurves].sort((a, b) => a.points[0].row - b.points[0].row);
+  editor.curveSidebar.innerHTML = `
+    <div class="panel-title">Curves</div>
+    <div class="curve-list">
+      ${visualCurves.map((curve) => `
+        <button class="curve-row ${curve.id === editor.selectedCurveId ? "selected" : ""}" type="button" data-curve-id="${curve.id}">
+          <span class="curve-swatch" style="background:${curve.color}"></span>
+          <span>${curve.name}</span>
+        </button>
+      `).join("")}
+    </div>
+  `;
+
+  editor.curveSidebar.querySelectorAll(".curve-row").forEach((button) => {
+    button.addEventListener("click", () => {
+      editor.selectedCurveId = button.dataset.curveId;
+      editor.selectedSegmentId = null;
+      editor.renderSidebars();
+      editor.draw();
+    });
+  });
+}
+
+function renderInspector(editor) {
+  const curve = editor.selectedCurve();
+  const segment = editor.selectedSegment();
+  const marker = editor.chordMarkers.find((item) => item.id === editor.selectedMarkerId);
+
+  editor.inspector.innerHTML = `
+    <div class="panel-title">Inspector</div>
+    <div class="inspector-section">
+      <label>Selected curve</label>
+      <div class="readout">${curve?.name || "None"}</div>
+    </div>
+    <div class="inspector-section">
+      <label for="segment-transition">Selected segment</label>
+      <select id="segment-transition" ${segment ? "" : "disabled"}>
+        ${TRANSITION_TYPES.map((type) => `<option value="${type}" ${segment?.transitionType === type ? "selected" : ""}>${type}</option>`).join("")}
+      </select>
+    </div>
+    <form class="marker-form inspector-section">
+      <label>Add chord marker</label>
+      <div class="readout">Marker time: ${roundBeat(editor.playheadBeat)}</div>
+      <div class="inline-grid">
+        <select name="key">${NOTES.map((note) => `<option value="${note}" ${note === editor.project.key ? "selected" : ""}>${note}</option>`).join("")}</select>
+        <select name="chordType">
+          ${Object.keys(CHORD_TYPE_LABELS).map((type) => `<option value="${type}" ${type === editor.project.chordType ? "selected" : ""}>${type}</option>`).join("")}
+        </select>
+      </div>
+      <input name="duration" type="number" min="0" max="16" step="0.25" value="1">
+      <button class="control-button full" type="button" data-action="preview-chord">Preview Chord</button>
+      <button class="control-button full" type="submit">Add Marker</button>
+    </form>
+    <div class="inspector-section">
+      <label>Selected marker</label>
+      <div class="marker-list">
+        ${editor.chordMarkers.map((item) => `
+          <button class="marker-row ${item.id === editor.selectedMarkerId ? "selected" : ""}" type="button" data-marker-id="${item.id}">
+            ${item.key} ${item.chordType} @ ${roundBeat(item.time)}
+          </button>
+        `).join("") || `<div class="readout">No markers</div>`}
+      </div>
+    </div>
+    ${marker ? renderMarkerDurations(editor, marker) : ""}
+  `;
+
+  editor.inspector.querySelector("#segment-transition")?.addEventListener("change", (event) => {
+    const selectedCurve = editor.selectedCurve();
+    if (selectedCurve && editor.selectedSegmentId) {
+      setSegmentTransition(selectedCurve, editor.selectedSegmentId, event.target.value);
+      editor.draw();
+    }
+  });
+
+  editor.inspector.querySelector(".marker-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget);
+    addChordMarker(editor, {
+      time: clamp(editor.playheadBeat, 0, TOTAL_BEATS),
+      key: String(formData.get("key")),
+      chordType: String(formData.get("chordType")),
+      defaultDuration: Number(formData.get("duration")) || 0,
+    });
+    editor.audio.update(editor.toneCurves);
+    editor.renderSidebars();
+    editor.draw();
+  });
+
+  editor.inspector.querySelector('[data-action="preview-chord"]').addEventListener("click", (event) => {
+    const form = event.currentTarget.closest("form");
+    const formData = new FormData(form);
+    const targets = getChordTargets(String(formData.get("key")), String(formData.get("chordType")), 4);
+    editor.audio.previewChord(targets.map((target) => target.frequency));
+  });
+
+  editor.inspector.querySelectorAll(".marker-row").forEach((button) => {
+    button.addEventListener("click", () => {
+      editor.selectedMarkerId = button.dataset.markerId;
+      editor.renderSidebars();
+      editor.draw();
+    });
+  });
+
+  editor.inspector.querySelectorAll("[data-duration-curve]").forEach((input) => {
+    input.addEventListener("input", () => {
+      setMarkerCurveDuration(editor, marker.id, input.dataset.durationCurve, Number(input.value) || 0);
+      editor.audio.update(editor.toneCurves);
+      editor.draw();
+    });
+  });
+}
+
+const CHORD_TYPE_LABELS = {
+  major: true,
+  minor: true,
+  diminished: true,
+  augmented: true,
+  "major 7": true,
+  "minor 7": true,
+  "dominant 7": true,
+};
+
+function renderMarkerDurations(editor, marker) {
+  return `
+    <div class="inspector-section">
+      <label>Transition duration per curve</label>
+      ${editor.toneCurves.map((curve) => `
+        <div class="duration-row">
+          <span>${curve.name}</span>
+          <input data-duration-curve="${curve.id}" type="number" min="0" max="16" step="0.25" value="${marker.transitionDurationPerCurve[curve.id] ?? 0}">
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
 async function togglePlayback(editor) {
-  const didStart = await editor.audio.toggle(editor.pitchLines);
+  const didStart = await editor.audio.toggle(editor.toneCurves, editor.playheadBeat);
+  editor.playheadBeat = editor.audio.currentBeat;
   editor.playButton.textContent = editor.audio.isPlaying ? "Pause" : "Play";
 
   if (didStart === false && !editor.audio.isAvailable) {
@@ -135,107 +330,30 @@ function stopPlayback(editor) {
   editor.playheadBeat = 0;
   editor.scrollBeat = 0;
   editor.playButton.textContent = "Play";
-  updateScrollbar(editor);
-  drawEditor(editor);
+  editor.updateScrollbar();
+  editor.draw();
 }
 
 function zoomTimeline(editor, direction) {
-  const centerBeat = editor.scrollBeat + visibleBeats(editor) / 2;
+  const centerBeat = editor.scrollBeat + editor.visibleBeats() / 2;
   const zoomFactor = direction > 0 ? 1.25 : 0.8;
   editor.pixelsPerBeat = clamp(editor.pixelsPerBeat * zoomFactor, MIN_PIXELS_PER_BEAT, MAX_PIXELS_PER_BEAT);
-  editor.scrollBeat = clamp(centerBeat - visibleBeats(editor) / 2, 0, maxScrollBeat(editor));
-  updateScrollbar(editor);
-  drawEditor(editor);
-}
-
-function beginPan(editor, event) {
-  editor.isDragging = true;
-  editor.didDrag = false;
-  editor.dragStartX = event.clientX;
-  editor.dragStartY = event.clientY;
-  editor.dragStartScrollBeat = editor.scrollBeat;
-  editor.canvas.setPointerCapture(event.pointerId);
-}
-
-function panTimeline(editor, event) {
-  if (!editor.isDragging) {
-    return;
-  }
-
-  const movedX = Math.abs(editor.dragStartX - event.clientX);
-  const movedY = Math.abs(editor.dragStartY - event.clientY);
-  editor.didDrag = editor.didDrag || movedX > 4 || movedY > 4;
-
-  const deltaBeats = (editor.dragStartX - event.clientX) / editor.pixelsPerBeat;
-  editor.scrollBeat = clamp(editor.dragStartScrollBeat + deltaBeats, 0, maxScrollBeat(editor));
-  updateScrollbar(editor);
-  drawEditor(editor);
-}
-
-function endPan(editor, event) {
-  if (editor.isDragging && !editor.didDrag && event.type === "pointerup") {
-    addPointFromEvent(editor, event);
-  }
-
-  editor.isDragging = false;
-}
-
-function wheelScroll(editor, event) {
-  event.preventDefault();
-  const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
-  editor.scrollBeat = clamp(editor.scrollBeat + delta / editor.pixelsPerBeat, 0, maxScrollBeat(editor));
-  updateScrollbar(editor);
-  drawEditor(editor);
-}
-
-function addPointFromEvent(editor, event) {
-  const grid = getGridMetrics(editor);
-  const rect = editor.canvas.getBoundingClientRect();
-  const x = event.clientX - rect.left;
-  const y = event.clientY - rect.top;
-
-  if (x < grid.x || x > grid.x + grid.width || y < grid.y || y > grid.y + grid.height) {
-    return;
-  }
-
-  const rowHeight = grid.height / SEMITONE_ROWS;
-  const beat = clamp(editor.scrollBeat + (x - grid.x) / editor.pixelsPerBeat, 0, TOTAL_BEATS);
-  const row = clamp(Math.round((y - grid.y) / rowHeight - 0.5), 0, SEMITONE_ROWS - 1);
-  const line = nearestPitchLine(editor, row);
-  const midi = rowToMidi(row);
-
-  line.points.push({
-    beat,
-    row,
-    midi,
-    frequency: midiToFrequency(midi),
-  });
-  line.points.sort((a, b) => a.beat - b.beat);
-  editor.audio.update(editor.pitchLines);
-  drawEditor(editor);
-}
-
-function nearestPitchLine(editor, row) {
-  return editor.pitchLines.reduce((nearest, line) => {
-    const nearestPoint = nearest.points[nearest.points.length - 1];
-    const linePoint = line.points[line.points.length - 1];
-    const nearestDistance = Math.abs(nearestPoint.row - row);
-    const lineDistance = Math.abs(linePoint.row - row);
-    return lineDistance < nearestDistance ? line : nearest;
-  }, editor.pitchLines[0]);
+  editor.scrollBeat = clamp(centerBeat - editor.visibleBeats() / 2, 0, editor.maxScrollBeat());
+  editor.updateScrollbar();
+  editor.draw();
 }
 
 function animate(editor) {
   if (editor.audio.isPlaying) {
     editor.playheadBeat = editor.audio.currentBeat;
-    editor.audio.update(editor.pitchLines);
+    editor.audio.update(editor.toneCurves);
 
-    const grid = getGridMetrics(editor);
-    const playheadX = beatToX(editor.playheadBeat, editor.scrollBeat, grid, editor.pixelsPerBeat);
+    const grid = editor.getGridMetrics();
+    const playheadX = editor.beatToX(editor.playheadBeat, grid);
 
     if (playheadX > grid.x + grid.width - 48) {
-      editor.scrollBeat = clamp(editor.playheadBeat - visibleBeats(editor) + 1, 0, maxScrollBeat(editor));
-      updateScrollbar(editor);
+      editor.scrollBeat = clamp(editor.playheadBeat - editor.visibleBeats() + 1, 0, editor.maxScrollBeat());
+      editor.updateScrollbar();
     }
 
     if (editor.playheadBeat >= TOTAL_BEATS) {
@@ -243,8 +361,8 @@ function animate(editor) {
     }
   }
 
-  drawEditor(editor);
-  editor.animationFrame = requestAnimationFrame(() => animate(editor));
+  editor.draw();
+  requestAnimationFrame(() => animate(editor));
 }
 
 function drawEditor(editor) {
@@ -261,22 +379,44 @@ function drawEditor(editor) {
 
   context.setTransform(dpr, 0, 0, dpr, 0, 0);
   renderPianoRoll(context, rect.width, rect.height, editor);
-  updateScrollbar(editor);
+  editor.updateScrollbar();
 }
 
 function renderPianoRoll(context, width, height, editor) {
-  const grid = getGridMetrics(editor, width, height);
+  const grid = editor.getGridMetrics(width, height);
   const rowHeight = grid.height / SEMITONE_ROWS;
 
   context.clearRect(0, 0, width, height);
   context.fillStyle = "#090b10";
   context.fillRect(0, 0, width, height);
 
+  drawMarkerLane(context, grid, editor);
   drawGrid(context, grid, rowHeight, editor);
   drawChordGuides(context, grid, rowHeight, editor);
-  drawPitchLines(context, grid, rowHeight, editor);
+  drawCurves(context, grid, rowHeight, editor);
   drawPlayhead(context, grid, editor);
   drawLabels(context, grid, rowHeight, editor);
+}
+
+function drawMarkerLane(context, grid, editor) {
+  context.fillStyle = "#121720";
+  context.fillRect(grid.x, grid.markerY, grid.width, grid.markerHeight);
+
+  editor.chordMarkers.forEach((marker) => {
+    const x = editor.beatToX(marker.time, grid);
+
+    if (x < grid.x - 90 || x > grid.x + grid.width) {
+      return;
+    }
+
+    context.fillStyle = marker.id === editor.selectedMarkerId ? "#3aa7ff" : "#24496a";
+    context.fillRect(x, grid.markerY + 3, 116, grid.markerHeight - 6);
+    context.fillStyle = "#f5f7fb";
+    context.font = "12px system-ui, sans-serif";
+    context.textAlign = "left";
+    context.textBaseline = "middle";
+    context.fillText(`${marker.key} ${marker.chordType}`, x + 8, grid.markerY + grid.markerHeight / 2);
+  });
 }
 
 function drawGrid(context, grid, rowHeight, editor) {
@@ -285,21 +425,18 @@ function drawGrid(context, grid, rowHeight, editor) {
   context.rect(grid.x, grid.y, grid.width, grid.height);
   context.clip();
 
-  context.strokeStyle = "#1a202b";
-  context.lineWidth = 1;
-
   for (let row = 0; row <= SEMITONE_ROWS; row += 1) {
     const py = grid.y + row * rowHeight;
+    context.strokeStyle = "#1a202b";
+    context.lineWidth = 1;
     context.beginPath();
     context.moveTo(grid.x, py);
     context.lineTo(grid.x + grid.width, py);
     context.stroke();
   }
 
-  const firstBeat = Math.floor(editor.scrollBeat);
-  const lastBeat = Math.ceil(editor.scrollBeat + visibleBeats(editor));
-  for (let beat = firstBeat; beat <= lastBeat; beat += 1) {
-    const px = beatToX(beat, editor.scrollBeat, grid, editor.pixelsPerBeat);
+  for (let beat = Math.floor(editor.scrollBeat); beat <= Math.ceil(editor.scrollBeat + editor.visibleBeats()); beat += 1) {
+    const px = editor.beatToX(beat, grid);
     context.strokeStyle = beat % 4 === 0 ? "#283142" : "#171d28";
     context.beginPath();
     context.moveTo(px, grid.y);
@@ -316,82 +453,122 @@ function drawChordGuides(context, grid, rowHeight, editor) {
   context.rect(grid.x, grid.y, grid.width, grid.height);
   context.clip();
 
-  editor.chordRows.forEach((row) => {
+  editor.guideRows.forEach((row) => {
     const barY = grid.y + row * rowHeight + rowHeight * 0.17;
-    context.fillStyle = "rgba(58, 167, 255, 0.68)";
+    context.fillStyle = "rgba(58, 167, 255, 0.66)";
     context.fillRect(grid.x, barY, grid.width, Math.max(4, rowHeight * 0.66));
   });
 
   context.restore();
 }
 
-function drawPitchLines(context, grid, rowHeight, editor) {
+function drawCurves(context, grid, rowHeight, editor) {
   context.save();
   context.beginPath();
   context.rect(grid.x, grid.y, grid.width, grid.height);
   context.clip();
 
-  editor.pitchLines.forEach((line) => {
-    context.strokeStyle = line.color;
-    context.fillStyle = line.color;
-    context.lineWidth = 2;
-
-    if (line.points.length > 1) {
-      context.beginPath();
-      line.points.forEach((point, index) => {
-        const px = beatToX(point.beat, editor.scrollBeat, grid, editor.pixelsPerBeat);
-        const py = rowToY(point.row, grid, rowHeight);
-
-        if (index === 0) {
-          context.moveTo(px, py);
-        } else {
-          context.lineTo(px, py);
-        }
-      });
-      context.stroke();
-    }
-
-    line.points.forEach((point) => {
-      const px = beatToX(point.beat, editor.scrollBeat, grid, editor.pixelsPerBeat);
-      const py = rowToY(point.row, grid, rowHeight);
-
-      if (px < grid.x - 12 || px > grid.x + grid.width + 12) {
-        return;
-      }
-
-      context.beginPath();
-      context.arc(px, py, 5, 0, Math.PI * 2);
-      context.fill();
-      context.strokeStyle = "#071019";
-      context.lineWidth = 2;
-      context.stroke();
-    });
+  editor.toneCurves.forEach((curve) => {
+    const selected = curve.id === editor.selectedCurveId;
+    context.globalAlpha = selected ? 1 : 0.36;
+    drawCurveSegments(context, grid, rowHeight, editor, curve, selected);
+    drawCurveNodes(context, grid, rowHeight, editor, curve, selected);
   });
 
   context.restore();
+  context.globalAlpha = 1;
+}
+
+function drawCurveSegments(context, grid, rowHeight, editor, curve, selected) {
+  curve.segments.forEach((segment) => {
+    const from = curve.points.find((point) => point.id === segment.fromId);
+    const to = curve.points.find((point) => point.id === segment.toId);
+
+    if (!from || !to) {
+      return;
+    }
+
+    const start = { x: editor.beatToX(from.beat, grid), y: editor.rowToY(from.row, grid, rowHeight) };
+    const end = { x: editor.beatToX(to.beat, grid), y: editor.rowToY(to.row, grid, rowHeight) };
+    context.strokeStyle = segment.id === editor.selectedSegmentId ? "#ffffff" : curve.color;
+    context.lineWidth = selected ? 3 : 2;
+    context.setLineDash(segment.transitionType === "custom bezier placeholder" ? [8, 6] : []);
+    renderTransitionPath(context, start, end, segment.transitionType);
+  });
+  context.setLineDash([]);
+}
+
+function renderTransitionPath(context, start, end, type) {
+  context.beginPath();
+
+  if (type === "instant") {
+    context.moveTo(start.x, start.y);
+    context.lineTo(end.x, start.y);
+    context.lineTo(end.x, end.y);
+  } else if (type === "linear" || type === "custom bezier placeholder") {
+    context.moveTo(start.x, start.y);
+    context.lineTo(end.x, end.y);
+  } else {
+    context.moveTo(start.x, start.y);
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    const controls = {
+      "ease-in": [start.x + dx * 0.75, start.y, end.x, end.y],
+      "ease-out": [start.x, start.y, start.x + dx * 0.25, end.y],
+      "ease-in-out": [start.x + dx * 0.25, start.y, start.x + dx * 0.75, end.y],
+      "S-curve": [start.x + dx * 0.15, start.y + dy * 0.9, start.x + dx * 0.85, end.y - dy * 0.9],
+    }[type] || [start.x, start.y, end.x, end.y];
+    context.bezierCurveTo(...controls, end.x, end.y);
+  }
+
+  context.stroke();
+}
+
+function drawCurveNodes(context, grid, rowHeight, editor, curve, selected) {
+  curve.points.forEach((point) => {
+    const x = editor.beatToX(point.beat, grid);
+    const y = editor.rowToY(point.row, grid, rowHeight);
+
+    if (x < grid.x - 12 || x > grid.x + grid.width + 12) {
+      return;
+    }
+
+    context.fillStyle = selected ? curve.color : "#8a93a3";
+    context.strokeStyle = selected ? "#071019" : "#353d4a";
+    context.lineWidth = selected ? 2 : 1;
+    context.beginPath();
+    context.arc(x, y, selected ? 6 : 4, 0, Math.PI * 2);
+    context.fill();
+    context.stroke();
+  });
 }
 
 function drawPlayhead(context, grid, editor) {
-  const x = beatToX(editor.playheadBeat, editor.scrollBeat, grid, editor.pixelsPerBeat);
+  const x = editor.beatToX(editor.playheadBeat, grid);
 
   if (x < grid.x || x > grid.x + grid.width) {
     return;
   }
 
-  context.strokeStyle = "#f5f7fb";
-  context.lineWidth = 2;
+  context.strokeStyle = "#ffffff";
+  context.lineWidth = 3;
   context.beginPath();
-  context.moveTo(x, grid.y);
+  context.moveTo(x, grid.markerY);
   context.lineTo(x, grid.y + grid.height);
   context.stroke();
 
-  context.fillStyle = "#f5f7fb";
+  context.fillStyle = "#ffffff";
+  context.strokeStyle = "#071019";
+  context.lineWidth = 2;
   context.beginPath();
-  context.moveTo(x, grid.y);
-  context.lineTo(x - 6, grid.y - 10);
-  context.lineTo(x + 6, grid.y - 10);
+  context.moveTo(x, grid.markerY - 8);
+  context.lineTo(x - 8, grid.markerY + 5);
+  context.lineTo(x - 8, grid.markerY + 18);
+  context.lineTo(x + 8, grid.markerY + 18);
+  context.lineTo(x + 8, grid.markerY + 5);
   context.closePath();
   context.fill();
+  context.stroke();
 }
 
 function drawLabels(context, grid, rowHeight, editor) {
@@ -401,88 +578,24 @@ function drawLabels(context, grid, rowHeight, editor) {
   context.textBaseline = "middle";
 
   for (let row = 0; row < SEMITONE_ROWS; row += 1) {
-    const midi = rowToMidi(row);
-    context.fillText(midiToName(midi), grid.x - 12, rowToY(row, grid, rowHeight));
+    context.fillText(midiToName(rowToMidi(row)), grid.x - 12, editor.rowToY(row, grid, rowHeight));
   }
 
   context.textAlign = "left";
   context.fillStyle = "#7fd0ff";
+  context.fillText("Chord markers", grid.x, grid.markerY - 4);
   context.fillText(`${editor.project.key} ${editor.project.chordType}`, grid.x + 10, grid.y + 14);
-
   context.strokeStyle = "rgba(255, 255, 255, 0.12)";
   context.strokeRect(grid.x, grid.y, grid.width, grid.height);
 }
 
-function getGridMetrics(editor, width, height) {
-  const canvasRect = editor.canvas.getBoundingClientRect();
-  const canvasWidth = width || canvasRect.width;
-  const canvasHeight = height || canvasRect.height;
-  const labelWidth = 76;
-  const topPad = 28;
-  const bottomPad = 24;
-
-  return {
-    x: labelWidth,
-    y: topPad,
-    width: Math.max(160, canvasWidth - labelWidth - 20),
-    height: Math.max(240, canvasHeight - topPad - bottomPad),
-  };
-}
-
-function getChordRows(key, chordType) {
-  const rootIndex = NOTES.indexOf(key);
-  const intervals = CHORD_INTERVALS[chordType] || CHORD_INTERVALS.major;
-
-  return intervals.flatMap((interval) => {
-    const pitchClass = (rootIndex + interval) % NOTES.length;
-    return [pitchClass, pitchClass + 12].map((rowFromBottom) => 23 - rowFromBottom);
-  });
-}
-
-function visibleBeats(editor) {
-  return getGridMetrics(editor).width / editor.pixelsPerBeat;
-}
-
-function maxScrollBeat(editor) {
-  return Math.max(0, TOTAL_BEATS - visibleBeats(editor));
-}
-
-function updateScrollbar(editor) {
-  const max = maxScrollBeat(editor);
-  editor.scrollbar.max = String(max);
-  editor.scrollbar.step = "0.01";
-  editor.scrollbar.value = String(clamp(editor.scrollBeat, 0, max));
-}
-
-function beatToX(beat, scrollBeat, grid, pixelsPerBeat) {
-  return grid.x + (beat - scrollBeat) * pixelsPerBeat;
-}
-
-function rowToY(row, grid, rowHeight) {
-  return grid.y + row * rowHeight + rowHeight / 2;
-}
-
-function rowToMidi(row) {
-  return BASE_MIDI + (SEMITONE_ROWS - 1 - row);
-}
-
-function midiToFrequency(midi) {
-  return 440 * 2 ** ((midi - 69) / 12);
-}
-
-function midiToName(midi) {
-  const note = NOTES[midi % NOTES.length];
-  const octave = Math.floor(midi / 12) - 1;
-  return `${note}${octave}`;
+function roundBeat(value) {
+  return Math.round(value * 100) / 100;
 }
 
 function lineColor(index) {
   const colors = ["#ffcb6b", "#c3e88d", "#f78c6c", "#bb86fc", "#82aaff", "#f07178", "#89ddff", "#d7dce2"];
   return colors[index % colors.length];
-}
-
-function clamp(value, min, max) {
-  return Math.min(Math.max(value, min), max);
 }
 
 function isTypingTarget(target) {
